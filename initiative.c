@@ -21,31 +21,60 @@
 #define LOG_EXPORT_FILE_NAME "combat_log_export.txt"
 #define MAX_MESSAGE_QUEUE 5
 #define MESSAGE_DISPLAY_TIME 1500 /* milliseconds */
+
+/* Application modes */
+typedef enum {
+    MODE_COMBAT = 0,
+    MODE_CONDITIONS = 1,
+    MODE_HELP = 2
+} AppMode;
  
- /* Conditions as bit flags */
- typedef enum {
-     COND_BLINDED       = (1 << 0),
-     COND_CHARMED       = (1 << 1),
-     COND_DEAFENED      = (1 << 2),
-     COND_FRIGHTENED    = (1 << 3),
-     COND_GRAPPLED      = (1 << 4),
-     COND_INCAPACITATED = (1 << 5),
-     COND_POISONED      = (1 << 6),
-     COND_PRONE         = (1 << 7),
-     COND_RESTRAINED    = (1 << 8),
-     COND_STUNNED       = (1 << 9),
-     COND_INVISIBLE     = (1 << 10),
-     COND_PARALYZED     = (1 << 11),
-     COND_PETRIFIED     = (1 << 12),
-     COND_UNCONSCIOUS   = (1 << 13),
-     COND_EXHAUSTION    = (1 << 14)
- } Condition;
- 
- const char* condition_names[NUM_CONDITIONS] = {
-     "Blinded", "Charmed", "Deafened", "Frightened", "Grappled",
-     "Incapacitated", "Poisoned", "Prone", "Restrained", "Stunned",
-     "Invisible", "Paralyzed", "Petrified", "Unconscious", "Exhaustion"
- };
+/* Conditions as bit flags - synchronized with condition_data array */
+typedef enum {
+    COND_BLINDED       = (1 << 0),
+    COND_CHARMED       = (1 << 1),
+    COND_DEAFENED      = (1 << 2),
+    COND_FRIGHTENED    = (1 << 3),
+    COND_GRAPPLED      = (1 << 4),
+    COND_INCAPACITATED = (1 << 5),
+    COND_POISONED      = (1 << 6),
+    COND_PRONE         = (1 << 7),
+    COND_RESTRAINED    = (1 << 8),
+    COND_STUNNED       = (1 << 9),
+    COND_INVISIBLE     = (1 << 10),
+    COND_PARALYZED     = (1 << 11),
+    COND_PETRIFIED     = (1 << 12),
+    COND_UNCONSCIOUS   = (1 << 13),
+    COND_EXHAUSTION    = (1 << 14)
+} Condition;
+
+/* Condition metadata structure to keep enum and names synchronized */
+typedef struct {
+    Condition bitmask;
+    const char* name;
+} ConditionInfo;
+
+/* Condition data array - ensures enum and names stay in sync */
+static const ConditionInfo condition_data[NUM_CONDITIONS] = {
+    {COND_BLINDED,       "Blinded"},
+    {COND_CHARMED,       "Charmed"},
+    {COND_DEAFENED,      "Deafened"},
+    {COND_FRIGHTENED,    "Frightened"},
+    {COND_GRAPPLED,      "Grappled"},
+    {COND_INCAPACITATED, "Incapacitated"},
+    {COND_POISONED,      "Poisoned"},
+    {COND_PRONE,         "Prone"},
+    {COND_RESTRAINED,    "Restrained"},
+    {COND_STUNNED,       "Stunned"},
+    {COND_INVISIBLE,     "Invisible"},
+    {COND_PARALYZED,     "Paralyzed"},
+    {COND_PETRIFIED,     "Petrified"},
+    {COND_UNCONSCIOUS,   "Unconscious"},
+    {COND_EXHAUSTION,    "Exhaustion"}
+};
+
+/* Forward declaration */
+const char* get_condition_name(int index);
  
  typedef enum {
      TYPE_PLAYER = 0,
@@ -115,6 +144,12 @@ typedef struct {
     /* Message Queue */
     MessageQueueEntry message_queue[MAX_MESSAGE_QUEUE];
     int message_queue_count;
+    
+    /* App State */
+    AppMode mode;
+    int condition_menu_cursor;      /* Selected condition in menu */
+    int condition_menu_target_id;   /* ID of combatant being edited */
+    int scroll_offset;               /* Scroll offset for long lists */
 } GameState;
  
  /* Color pairs */
@@ -160,6 +195,9 @@ void roll_death_save(GameState* state, Combatant* c);
 void reset_death_saves(Combatant* c);
 void handle_damage_at_zero_hp(GameState* state, Combatant* c, int damage, int is_critical);
 void stabilize_combatant(GameState* state);
+void draw_condition_menu(GameState* state);
+int handle_condition_menu_input(GameState* state, int ch);
+void draw_help_menu(GameState* state);
  
  /* New Feature Prototypes */
  void log_action(GameState* state, const char* format, ...);
@@ -169,7 +207,7 @@ void stabilize_combatant(GameState* state);
  
  /* Helper Prototypes */
  int get_input_string(const char* prompt, char* buffer, int max_len);
- int get_input_int(const char* prompt, int* value);
+ int get_input_int(GameState* state, const char* prompt, int* value, int min_val, int max_val);
  int get_input_char(const char* prompt, const char* allowed);
  int get_input_confirm(const char* prompt);
 void show_message(GameState* state, const char* msg, int is_error);
@@ -185,50 +223,98 @@ int main(void) {
     state.current_turn_id = -1;
     state.selected_id = -1;
     state.message_queue_count = 0;
+    state.mode = MODE_COMBAT;
+    state.condition_menu_cursor = 0;
+    state.condition_menu_target_id = -1;
+    state.scroll_offset = 0;
     init_log(&state); /* Initialize dynamic log array */
     
     /* Initialize random seed for death saves */
     srand((unsigned int)time(NULL));
 
     initscr();
-     cbreak();
-     noecho();
-     keypad(stdscr, TRUE);
-     curs_set(0);
+    cbreak();
+    noecho();
+    keypad(stdscr, TRUE);
+    curs_set(0);
+    timeout(-1); /* Blocking input by default - prevents flickering */
  
      if (has_colors()) {
          start_color();
          init_colors();
      }
  
-     int running = 1;
-     while (running) {
-         draw_ui(&state);
- 
-         int ch = getch();
-         switch (tolower(ch)) {
-             case 'q': running = 0; break;
-             case 'a': save_undo_state(&state); add_combatant(&state); break;
-             case 'd': if (state.count > 0) { save_undo_state(&state); remove_combatant(&state); } break; 
-             case 'h': if (state.count > 0) { save_undo_state(&state); edit_hp(&state); } break;
-             case 'r': if (state.count > 0) { save_undo_state(&state); reroll_initiative(&state); } break;
-             case 'c': if (state.count > 0) toggle_condition(&state); break; 
-             case 'n': if (state.count > 0) { save_undo_state(&state); next_turn(&state); } break;
-             case 'p': if (state.count > 0) { save_undo_state(&state); prev_turn(&state); } break;
-             case 's': save_state(&state); break;
-             case 'l': load_state(&state); break; 
-            case 'e': if (state.log_count > 0) export_log(&state); break; /* Export Log */
-            case 'z': undo_last_action(&state); break; /* Undo */
-            case 'x': if (state.count > 0) { save_undo_state(&state); roll_death_save(&state, NULL); } break; /* Manual Death Save */
-            case 't': if (state.count > 0) { save_undo_state(&state); stabilize_combatant(&state); } break; /* Stabilize */
-             case KEY_UP:
-                 if (state.count > 0) move_selection(&state, -1);
-                 break;
-             case KEY_DOWN:
-                 if (state.count > 0) move_selection(&state, 1);
-                 break;
-         }
-     }
+    int running = 1;
+    
+    while (running) {
+        clear_old_messages(&state);
+        draw_ui(&state);
+
+        /* Use blocking input, but check for message expiration periodically */
+        timeout(1000); /* 1 second timeout to check message expiration */
+        int ch = getch();
+        timeout(-1); /* Back to blocking for actual input */
+        
+        if (ch == ERR) {
+            /* Timeout - check if messages expired and redraw if needed */
+            int old_count = state.message_queue_count;
+            clear_old_messages(&state);
+            if (state.message_queue_count != old_count) {
+                continue; /* Redraw on next iteration */
+            }
+            continue; /* No input, check again */
+        }
+
+        /* Handle mode-specific input */
+        if (state.mode == MODE_CONDITIONS) {
+            /* ESC key handling - check before passing to handler */
+            if (ch == 27) {
+                /* ESC pressed - close menu immediately */
+                state.mode = MODE_COMBAT;
+                show_message(&state, "Condition menu closed.", 0);
+                continue;
+            }
+            handle_condition_menu_input(&state, ch);
+            continue;
+        } else if (state.mode == MODE_HELP) {
+            state.mode = MODE_COMBAT; /* Close help on any key */
+            continue;
+        }
+
+        /* Main combat mode input */
+        switch (tolower(ch)) {
+            case 'q': running = 0; break;
+            case 'a': save_undo_state(&state); add_combatant(&state); break;
+            case 'd': if (state.count > 0) { save_undo_state(&state); remove_combatant(&state); } break; 
+            case 'h': 
+                if (state.count > 0) { 
+                    save_undo_state(&state); 
+                    edit_hp(&state); 
+                }
+                break;
+            case '?':
+                state.mode = MODE_HELP;
+                break;
+            case 'r': if (state.count > 0) { save_undo_state(&state); reroll_initiative(&state); } break;
+            case 'c': if (state.count > 0) toggle_condition(&state); break; 
+            case 'n': if (state.count > 0) { save_undo_state(&state); next_turn(&state); } break;
+            case 'p': if (state.count > 0) { save_undo_state(&state); prev_turn(&state); } break;
+            case 's': save_state(&state); break;
+            case 'l': load_state(&state); break; 
+            case 'e': if (state.log_count > 0) export_log(&state); break;
+            case 'z': undo_last_action(&state); break;
+            case 'x': if (state.count > 0) { save_undo_state(&state); roll_death_save(&state, NULL); } break;
+            case 't': if (state.count > 0) { save_undo_state(&state); stabilize_combatant(&state); } break;
+            case KEY_UP:
+            case 'k':
+                if (state.count > 0) move_selection(&state, -1);
+                break;
+            case KEY_DOWN:
+            case 'j':
+                if (state.count > 0) move_selection(&state, 1);
+                break;
+        }
+    }
  
      cleanup_log(&state);
      endwin();
@@ -303,17 +389,44 @@ void init_log(GameState* state) {
      state->log_count++;
  }
  
- void export_log(GameState* state) {
-     char path[256];
-     const char* home = getenv("HOME");
-     if (home) snprintf(path, sizeof(path), "%s/%s", home, LOG_EXPORT_FILE_NAME);
-     else snprintf(path, sizeof(path), "%s", LOG_EXPORT_FILE_NAME);
- 
-     FILE* f = fopen(path, "a"); /* Append mode for session notes */
-     if (!f) {
-         show_message(state, "Log export failed!", 1);
-         return;
-     }
+/**
+ * Export combat log to a text file.
+ * Appends to existing file to preserve session history.
+ */
+void export_log(GameState* state) {
+    if (!state || state->log_count == 0) {
+        show_message(state, "No log entries to export!", 1);
+        return;
+    }
+    
+    char path[256];
+    const char* home = getenv("HOME");
+    if (home) {
+        int ret = snprintf(path, sizeof(path), "%s/%s", home, LOG_EXPORT_FILE_NAME);
+        if (ret < 0 || ret >= (int)sizeof(path)) {
+            show_message(state, "Error: Path too long for log file!", 1);
+            return;
+        }
+    } else {
+        snprintf(path, sizeof(path), "%s", LOG_EXPORT_FILE_NAME);
+    }
+
+    FILE* f = fopen(path, "a"); /* Append mode for session notes */
+    if (!f) {
+        char err_msg[256];
+        char path_display[200];
+        size_t path_len = strlen(path);
+        if (path_len >= sizeof(path_display)) {
+            /* Show last part of path if too long */
+            snprintf(path_display, sizeof(path_display), "...%s", path + (path_len - (sizeof(path_display) - 4)));
+        } else {
+            strncpy(path_display, path, sizeof(path_display) - 1);
+            path_display[sizeof(path_display) - 1] = '\0';
+        }
+        snprintf(err_msg, sizeof(err_msg), "Log export failed! Cannot open: %s", path_display);
+        show_message(state, err_msg, 1);
+        return;
+    }
  
      time_t t = time(NULL);
      struct tm *tm = localtime(&t);
@@ -385,7 +498,7 @@ void init_log(GameState* state) {
 void draw_ui(GameState* state) {
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
-    clear();
+    erase(); /* Use erase() instead of clear() for better performance */
     
     /* Clear old messages from queue */
     clear_old_messages(state);
@@ -421,6 +534,13 @@ void draw_ui(GameState* state) {
      attroff(A_BOLD);
  
     draw_filtered_list(state, split_y + 1, 0, cols, rows - split_y - 1, TYPE_ENEMY);
+    
+    /* Draw overlays based on mode */
+    if (state->mode == MODE_CONDITIONS) {
+        draw_condition_menu(state);
+    } else if (state->mode == MODE_HELP) {
+        draw_help_menu(state);
+    }
     
     /* Draw message queue */
     draw_message_queue(state);
@@ -537,9 +657,9 @@ void draw_ui(GameState* state) {
              if (c->conditions & (1 << j)) {
                  char temp[32];
                  if (c->condition_duration[j] > 0)
-                     snprintf(temp, sizeof(temp), "%s(%d) ", condition_names[j], c->condition_duration[j]);
-                 else
-                     snprintf(temp, sizeof(temp), "%s ", condition_names[j]);
+                    snprintf(temp, sizeof(temp), "%s(%d) ", get_condition_name(j), c->condition_duration[j]);
+                else
+                    snprintf(temp, sizeof(temp), "%s ", get_condition_name(j));
                  strcat(cond_str, temp);
              }
          }
@@ -559,109 +679,262 @@ void draw_ui(GameState* state) {
      }
  }
  
- void toggle_condition(GameState* state) {
-     if (state->count == 0) return;
-     int idx = get_index_by_id(state, state->selected_id);
-     if (idx == -1) return;
+/**
+ * Open condition menu for selected combatant.
+ * Switches to MODE_CONDITIONS for interactive editing.
+ */
+void toggle_condition(GameState* state) {
+    if (state->count == 0) return;
+    int idx = get_index_by_id(state, state->selected_id);
+    if (idx == -1) {
+        show_message(state, "No combatant selected!", 1);
+        return;
+    }
+
+    save_undo_state(state);
+    state->mode = MODE_CONDITIONS;
+    state->condition_menu_cursor = 0;
+    state->condition_menu_target_id = state->selected_id;
+}
+
+/**
+ * Draw the condition sub-menu overlay.
+ */
+void draw_condition_menu(GameState* state) {
+    int idx = get_index_by_id(state, state->condition_menu_target_id);
+    if (idx == -1) {
+        state->mode = MODE_COMBAT;
+        return;
+    }
+
+    Combatant* c = &state->combatants[idx];
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+
+    int menu_height = NUM_CONDITIONS + 5; /* Extra line for instructions */
+    int menu_width = 60; /* Wider to fit instructions */
+    int start_y = (rows - menu_height) / 2;
+    int start_x = (cols - menu_width) / 2;
+    if (start_y < 0) start_y = 0;
+    if (start_x < 0) start_x = 0;
+
+    /* Draw semi-transparent overlay effect */
+    for (int y = start_y; y < start_y + menu_height && y < rows; y++) {
+        for (int x = start_x; x < start_x + menu_width && x < cols; x++) {
+            mvaddch(y, x, ' ' | A_REVERSE);
+        }
+    }
+
+    /* Draw menu box with border */
+    attron(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
+    mvprintw(start_y, start_x + 2, "Conditions for: %s", c->name);
+    attroff(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
+
+    mvhline(start_y + 1, start_x, ACS_HLINE, menu_width);
+    
+    /* Split instructions into two lines to fit */
+    attron(COLOR_PAIR(COLOR_DEFAULT) | A_DIM);
+    mvprintw(start_y + 2, start_x + 2, "UP/DOWN: Navigate | ENTER: Toggle | 'd': Duration");
+    mvprintw(start_y + 3, start_x + 2, "ESC or 'q': Done");
+    attroff(COLOR_PAIR(COLOR_DEFAULT) | A_DIM);
+    
+    mvhline(start_y + 4, start_x, ACS_HLINE, menu_width);
+
+    for (int i = 0; i < NUM_CONDITIONS; i++) {
+        int is_active = c->conditions & (1 << i);
+        int is_selected = (i == state->condition_menu_cursor);
+        int y = start_y + 5 + i; /* Start after instructions */
+
+        int pair = is_selected ? COLOR_MENU_SEL : COLOR_MENU_NORM;
+        attron(COLOR_PAIR(pair));
+        if (is_selected) attron(A_BOLD);
+
+        mvprintw(y, start_x + 2, "[%c] %-20s", is_active ? 'X' : ' ', get_condition_name(i));
+
+        if (is_active && c->condition_duration[i] > 0) {
+            printw(" (%d rounds)", c->condition_duration[i]);
+        }
+
+        if (is_selected) attroff(A_BOLD);
+        attroff(COLOR_PAIR(pair));
+    }
+}
+
+/**
+ * Handle input in condition menu mode.
+ */
+int handle_condition_menu_input(GameState* state, int ch) {
+    int idx = get_index_by_id(state, state->condition_menu_target_id);
+    if (idx == -1) {
+        state->mode = MODE_COMBAT;
+        return 1;
+    }
+
+    Combatant* c = &state->combatants[idx];
+
+    switch (ch) {
+        case KEY_UP:
+        case 'k':
+            state->condition_menu_cursor = (state->condition_menu_cursor - 1 + NUM_CONDITIONS) % NUM_CONDITIONS;
+            return 1;
+        case KEY_DOWN:
+        case 'j':
+            state->condition_menu_cursor = (state->condition_menu_cursor + 1) % NUM_CONDITIONS;
+            return 1;
+        case '\n':
+        case '\r':
+        case ' ':
+            {
+                int cursor = state->condition_menu_cursor;
+                int was_active = c->conditions & (1 << cursor);
+                c->conditions ^= (1 << cursor);
+                
+                if (!was_active && (c->conditions & (1 << cursor))) {
+                    log_action(state, "%s: %s applied.", c->name, get_condition_name(cursor));
+                } else if (was_active && !(c->conditions & (1 << cursor))) {
+                    c->condition_duration[cursor] = 0;
+                    log_action(state, "%s: %s removed.", c->name, get_condition_name(cursor));
+                }
+            }
+            return 1;
+        case 'd':
+        case 'D':
+            {
+                int cursor = state->condition_menu_cursor;
+                if (c->conditions & (1 << cursor)) {
+                    int dur;
+                    if (get_input_int(state, "Duration (rounds, 0=permanent): ", &dur, 0, INT_MAX)) {
+                        c->condition_duration[cursor] = dur;
+                        log_action(state, "%s: %s duration set to %d.", c->name, get_condition_name(cursor), dur);
+                    }
+                } else {
+                    show_message(state, "Enable condition first!", 1);
+                }
+            }
+            return 1;
+        case 'q':
+        case 'Q':
+        case 27: /* ESC */
+            state->mode = MODE_COMBAT;
+            show_message(state, "Condition menu closed.", 0);
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/**
+ * Draw help menu overlay.
+ */
+void draw_help_menu(GameState* state) {
+    (void)state; /* Unused parameter - kept for consistency */
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+
+    int h_height = 26; /* Increased to fit all content including L and Q */
+    int h_width = 75;
+    int h_start_y = (rows - h_height) / 2;
+    int h_start_x = (cols - h_width) / 2;
+    if (h_start_y < 0) h_start_y = 0;
+    if (h_start_x < 0) h_start_x = 0;
+
+    /* Draw overlay */
+    for (int y = h_start_y; y < h_start_y + h_height && y < rows; y++) {
+        for (int x = h_start_x; x < h_start_x + h_width && x < cols; x++) {
+            mvaddch(y, x, ' ' | A_REVERSE);
+        }
+    }
+
+    attron(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
+    mvprintw(h_start_y, h_start_x + (h_width - 12) / 2, "HELP & COMMANDS");
+    attroff(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
+
+    mvhline(h_start_y + 1, h_start_x, ACS_HLINE, h_width);
+
+    attron(COLOR_PAIR(COLOR_DEFAULT));
+    int y = h_start_y + 3;
+    mvprintw(y++, h_start_x + 2, "Navigation:");
+    mvprintw(y++, h_start_x + 4, "UP/DOWN or k/j : Move selection");
+    mvprintw(y++, h_start_x + 4, "ENTER : Set selected as current turn");
+    y++;
+    mvprintw(y++, h_start_x + 2, "Combat Commands:");
+    mvprintw(y++, h_start_x + 4, "A : Add combatant");
+    mvprintw(y++, h_start_x + 4, "D : Delete selected combatant");
+    mvprintw(y++, h_start_x + 4, "H : Edit HP (damage/heal)");
+    mvprintw(y++, h_start_x + 4, "C : Toggle conditions (interactive menu)");
+    mvprintw(y++, h_start_x + 4, "N : Next turn (auto death saves)");
+    mvprintw(y++, h_start_x + 4, "P : Previous turn");
+    mvprintw(y++, h_start_x + 4, "R : Reroll initiative");
+    mvprintw(y++, h_start_x + 4, "X : Manual death save roll");
+    mvprintw(y++, h_start_x + 4, "T : Stabilize combatant");
+    y++;
+    mvprintw(y++, h_start_x + 2, "Other:");
+    mvprintw(y++, h_start_x + 4, "Z : Undo last action");
+    mvprintw(y++, h_start_x + 4, "E : Export combat log");
+    mvprintw(y++, h_start_x + 4, "S : Save game");
+    mvprintw(y++, h_start_x + 4, "L : Load game");
+    mvprintw(y++, h_start_x + 4, "Q : Quit");
+    attroff(COLOR_PAIR(COLOR_DEFAULT));
+
+    mvhline(h_start_y + h_height - 2, h_start_x, ACS_HLINE, h_width);
+    attron(COLOR_PAIR(COLOR_SEPARATOR));
+    mvprintw(h_start_y + h_height - 1, h_start_x + (h_width - 20) / 2, "Press any key to close");
+    attroff(COLOR_PAIR(COLOR_SEPARATOR));
+    
+    /* Ensure we don't overflow - truncate if needed */
+    if (y > h_start_y + h_height - 2) {
+        /* Clear any overflow lines */
+        for (int clear_y = h_start_y + h_height - 2; clear_y < h_start_y + h_height; clear_y++) {
+            if (clear_y < rows) {
+                move(clear_y, h_start_x);
+                clrtoeol();
+            }
+        }
+    }
+}
  
-     /* 1. Save state once upon entering the menu. All changes here are one undo step. */
-     save_undo_state(state);
  
-     Combatant* c = &state->combatants[idx];
-     int cursor = 0;
-     int viewing = 1;
- 
-     while (viewing) {
-         clear();
-         attron(A_BOLD | A_UNDERLINE);
-         mvprintw(1, 2, "Conditions for: %s", c->name);
-         attroff(A_BOLD | A_UNDERLINE);
-         mvprintw(2, 2, "UP/DOWN: Select | SPACE/ENTER: Toggle | 'd': Duration | 'q': Done");
-         mvhline(3, 0, ACS_HLINE, COLS);
- 
-         for (int i = 0; i < NUM_CONDITIONS; i++) {
-             int is_active = c->conditions & (1 << i);
-             int is_selected = (i == cursor);
- 
-             int pair = is_selected ? COLOR_MENU_SEL : COLOR_MENU_NORM;
-             attron(COLOR_PAIR(pair));
-             if (is_selected) attron(A_BOLD);
- 
-             mvhline(4 + i, 0, ' ', COLS);
-             mvprintw(4 + i, 4, "[%c] %-15s", is_active ? 'X' : ' ', condition_names[i]);
- 
-             if (is_active && c->condition_duration[i] > 0) {
-                 printw(" (Duration: %d)", c->condition_duration[i]);
-             }
- 
-             if (is_selected) attroff(A_BOLD);
-             attroff(COLOR_PAIR(pair));
-         }
- 
-         refresh();
- 
-         int ch = getch();
-         switch (ch) {
-             case KEY_UP:
-                 cursor--; if (cursor < 0) cursor = NUM_CONDITIONS - 1; break;
-             case KEY_DOWN:
-                 cursor++; if (cursor >= NUM_CONDITIONS) cursor = 0; break;
-             case ' ':
-             case '\n':
-             case '\r':
-                 {
-                     int was_active = c->conditions & (1 << cursor);
-                     c->conditions ^= (1 << cursor);
-                     
-                     if (!was_active && (c->conditions & (1 << cursor))) {
-                         log_action(state, "%s: %s applied.", c->name, condition_names[cursor]);
-                     } else if (was_active && !(c->conditions & (1 << cursor))) {
-                         c->condition_duration[cursor] = 0;
-                         log_action(state, "%s: %s removed.", c->name, condition_names[cursor]);
-                     }
-                 }
-                 break;
-             case 'd':
-             case 'D':
-                 if (c->conditions & (1 << cursor)) {
-                     int dur;
-                     if (get_input_int("Duration (rounds): ", &dur)) {
-                          if (dur >= 0) {
-                             c->condition_duration[cursor] = dur;
-                             log_action(state, "%s: %s duration set to %d.", c->name, condition_names[cursor], dur);
-                          }
-                     }
-                 } else {
-                     show_message(state, "Enable condition first!", 1);
-                 }
-                 break;
-             case 'q':
-             case 'Q':
-             case 27:
-                 viewing = 0; break;
-         }
-     }
- }
- 
- 
- void add_combatant(GameState* state) {
-     if (state->count >= MAX_COMBATANTS) {
-         show_message(state, "List full!", 1);
-         return;
-     }
- 
+/**
+ * Add a new combatant to the initiative tracker.
+ * Validates all inputs and ensures data integrity.
+ */
+void add_combatant(GameState* state) {
+    if (!state) return;
+    
+    if (state->count >= MAX_COMBATANTS) {
+        show_message(state, "List full! Maximum combatants reached.", 1);
+        return;
+    }
+
     Combatant c = {0};
     int type_char = get_input_char("Type? (P)layer / (E)nemy: ", "pePE");
-    if (type_char == 0) return; 
+    if (type_char == 0) return; /* User cancelled */
 
     c.type = (tolower(type_char) == 'p') ? TYPE_PLAYER : TYPE_ENEMY;
 
     if (!get_input_string("Name: ", c.name, NAME_LENGTH)) return;
-    if (!get_input_int("Initiative: ", &c.initiative)) return;
-    if (!get_input_int("Dexterity (Tiebreaker): ", &c.dex)) return;
+    
+    /* Validate name is not empty after trimming */
+    int name_len = (int)strlen(c.name);
+    while (name_len > 0 && isspace((unsigned char)c.name[name_len - 1])) {
+        c.name[--name_len] = '\0';
+    }
+    if (name_len == 0) {
+        show_message(state, "Name cannot be empty!", 1);
+        return;
+    }
+    
+    if (!get_input_int(state, "Initiative: ", &c.initiative, INT_MIN, INT_MAX)) return;
+    if (!get_input_int(state, "Dexterity (Tiebreaker): ", &c.dex, INT_MIN, INT_MAX)) return;
     
     int max_hp;
-    if (!get_input_int("Max HP: ", &max_hp)) return;
+    if (!get_input_int(state, "Max HP: ", &max_hp, 1, INT_MAX)) return;
+    
+    /* Validate max_hp is reasonable */
+    if (max_hp > 10000) {
+        show_message(state, "Warning: Max HP seems unusually high. Continuing anyway.", 1);
+    }
+    
     c.max_hp = max_hp;
     c.hp = c.max_hp;
     c.death_save_successes = 0;
@@ -724,16 +997,25 @@ void draw_ui(GameState* state) {
      }
  }
  
+/**
+ * Edit HP for selected combatant with damage/healing.
+ * Handles death saves, instant death, and unconscious state.
+ */
 void edit_hp(GameState* state) {
+    if (!state) return;
+    
     int idx = get_index_by_id(state, state->selected_id);
-    if (idx == -1) return;
+    if (idx == -1) {
+        show_message(state, "No combatant selected!", 1);
+        return;
+    }
     
     Combatant* c = &state->combatants[idx];
     char prompt[64];
-    snprintf(prompt, 64, "%s (%d/%d) Change (+/-): ", c->name, c->hp, c->max_hp);
+    snprintf(prompt, sizeof(prompt), "%s (%d/%d) Change (+/-): ", c->name, c->hp, c->max_hp);
     
     int change;
-    if (get_input_int(prompt, &change)) {
+    if (get_input_int(state, prompt, &change, INT_MIN, INT_MAX)) {
         
         int old_hp = c->hp;
         int damage = (change < 0) ? -change : 0;
@@ -803,7 +1085,7 @@ void edit_hp(GameState* state) {
      if (idx == -1) return;
  
     int val;
-    if (get_input_int("New Init: ", &val)) {
+    if (get_input_int(state, "New Init: ", &val, INT_MIN, INT_MAX)) {
         int old_init = state->combatants[idx].initiative;
         state->combatants[idx].initiative = val;
         sort_combatants(state);
@@ -871,41 +1153,78 @@ void next_turn(GameState* state) {
                 state->combatants[i].condition_duration[j]--;
                 if (state->combatants[i].condition_duration[j] == 0) {
                     state->combatants[i].conditions &= (uint16_t)~(1 << j);
-                    log_action(state, "%s: %s duration ended.", state->combatants[i].name, condition_names[j]);
+                    log_action(state, "%s: %s duration ended.", state->combatants[i].name, get_condition_name(j));
                 }
              }
          }
      }
  }
  
- void save_state(GameState* state) {
-     char path[256];
-     const char* home = getenv("HOME");
-     if (home) snprintf(path, sizeof(path), "%s/%s", home, SAVE_FILE_NAME);
-     else snprintf(path, sizeof(path), "%s", SAVE_FILE_NAME);
- 
-     FILE* f = fopen(path, "w");
-     if (!f) {
-         show_message(state, "Save failed!", 1);
-         return;
-     }
+void save_state(GameState* state) {
+    char path[256];
+    const char* home = getenv("HOME");
+    if (home) {
+        int ret = snprintf(path, sizeof(path), "%s/%s", home, SAVE_FILE_NAME);
+        if (ret < 0 || ret >= (int)sizeof(path)) {
+            show_message(state, "Error: Path too long for save file!", 1);
+            return;
+        }
+    } else {
+        snprintf(path, sizeof(path), "%s", SAVE_FILE_NAME);
+    }
+
+    FILE* f = fopen(path, "w");
+    if (!f) {
+        char err_msg[256];
+        char path_display[200];
+        size_t path_len = strlen(path);
+        if (path_len >= sizeof(path_display)) {
+            /* Show last part of path if too long */
+            snprintf(path_display, sizeof(path_display), "...%s", path + (path_len - (sizeof(path_display) - 4)));
+        } else {
+            strncpy(path_display, path, sizeof(path_display) - 1);
+            path_display[sizeof(path_display) - 1] = '\0';
+        }
+        snprintf(err_msg, sizeof(err_msg), "Save failed! Cannot open file: %s", path_display);
+        show_message(state, err_msg, 1);
+        return;
+    }
  
      fprintf(f, "%d|%d|%d|%d|%d\n", 
          state->round, state->next_id, state->count, state->current_turn_id, state->selected_id);
  
      for (int i = 0; i < state->count; i++) {
          Combatant* c = &state->combatants[i];
-         fprintf(f, "%d|%s|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+         int ret = fprintf(f, "%d|%s|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
              c->id, c->name, c->type, c->initiative, c->dex, c->max_hp, c->hp, c->conditions,
              c->death_save_successes, c->death_save_failures, c->is_stable, c->is_dead);
          
-         for(int j=0; j<NUM_CONDITIONS; j++) {
-             fprintf(f, "|%d", c->condition_duration[j]);
+         if (ret < 0) {
+             fclose(f);
+             show_message(state, "Save failed! Write error occurred.", 1);
+             return;
          }
-         fprintf(f, "\n");
+         
+         for(int j=0; j<NUM_CONDITIONS; j++) {
+             ret = fprintf(f, "|%d", c->condition_duration[j]);
+             if (ret < 0) {
+                 fclose(f);
+                 show_message(state, "Save failed! Write error occurred.", 1);
+                 return;
+             }
+         }
+         ret = fprintf(f, "\n");
+         if (ret < 0) {
+             fclose(f);
+             show_message(state, "Save failed! Write error occurred.", 1);
+             return;
+         }
      }
- 
-     fclose(f);
+
+     if (fclose(f) != 0) {
+         show_message(state, "Save failed! Error closing file.", 1);
+         return;
+     }
      show_message(state, "Game Saved.", 0);
  }
  
@@ -920,11 +1239,22 @@ void next_turn(GameState* state) {
      if (home) snprintf(path, sizeof(path), "%s/%s", home, SAVE_FILE_NAME);
      else snprintf(path, sizeof(path), "%s", SAVE_FILE_NAME);
  
-     FILE* f = fopen(path, "r");
-     if (!f) {
-         show_message(state, "No save file found.", 1);
-         return;
-     }
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        char err_msg[256];
+        char path_display[200];
+        size_t path_len = strlen(path);
+        if (path_len >= sizeof(path_display)) {
+            /* Show last part of path if too long */
+            snprintf(path_display, sizeof(path_display), "...%s", path + (path_len - (sizeof(path_display) - 4)));
+        } else {
+            strncpy(path_display, path, sizeof(path_display) - 1);
+            path_display[sizeof(path_display) - 1] = '\0';
+        }
+        snprintf(err_msg, sizeof(err_msg), "Load failed! Cannot open file: %s", path_display);
+        show_message(state, err_msg, 1);
+        return;
+    }
  
      /* Wipe log and undo stack on successful load */
      state->log_count = 0; 
@@ -932,11 +1262,27 @@ void next_turn(GameState* state) {
      
      memset(state->combatants, 0, sizeof(state->combatants));
      
-     char line[1024];
-     if (fgets(line, sizeof(line), f)) {
-         sscanf(line, "%d|%d|%d|%d|%d", 
-             &state->round, &state->next_id, &state->count, &state->current_turn_id, &state->selected_id);
-     }
+    char line[1024];
+    if (fgets(line, sizeof(line), f)) {
+        int parsed = sscanf(line, "%d|%d|%d|%d|%d", 
+            &state->round, &state->next_id, &state->count, &state->current_turn_id, &state->selected_id);
+        if (parsed != 5) {
+            fclose(f);
+            show_message(state, "Load failed! Invalid save file format.", 1);
+            return;
+        }
+        /* Validate loaded values */
+        if (state->count < 0 || state->count > MAX_COMBATANTS) {
+            fclose(f);
+            show_message(state, "Load failed! Invalid combatant count in save file.", 1);
+            return;
+        }
+        if (state->round < 1) state->round = 1;
+    } else {
+        fclose(f);
+        show_message(state, "Load failed! Empty or corrupted save file.", 1);
+        return;
+    }
  
     int idx = 0;
     while (fgets(line, sizeof(line), f) && idx < MAX_COMBATANTS) {
@@ -1000,10 +1346,16 @@ void next_turn(GameState* state) {
         idx++;
     }
     state->count = idx;
-    fclose(f);
+    
+    if (fclose(f) != 0) {
+        show_message(state, "Load warning: Error closing file.", 1);
+    }
     
     /* Sort combatants by initiative after loading */
     sort_combatants(state);
+    
+    /* Reset message queue on load */
+    state->message_queue_count = 0;
     
     log_action(state, "Game Loaded from save file. Round set to %d.", state->round);
     show_message(state, "Game Loaded.", 0);
@@ -1190,36 +1542,127 @@ void sort_combatants(GameState* state) {
      return -1;
  }
  
- int parse_int_safe(const char* str, int* out) {
-     if (str == NULL || *str == '\0') return 0;
-     char* endptr;
-     long val = strtol(str, &endptr, 10);
-     if (endptr == str) return 0; 
-     if (*endptr != '\0' && *endptr != '\n') return 0; 
-     if (val > INT_MAX || val < INT_MIN) return 0;
-     *out = (int)val;
-     return 1;
- }
- 
- int get_input_string(const char* prompt, char* buffer, int max_len) {
-     attron(COLOR_PAIR(COLOR_HEADER));
-     mvprintw(LINES-2, 0, "%s", prompt);
-     clrtoeol();
-     attroff(COLOR_PAIR(COLOR_HEADER));
-     echo(); curs_set(1);
-     int ret = (getnstr(buffer, max_len - 1) != ERR && buffer[0] != '\0');
-     noecho(); curs_set(0);
-     return ret;
- }
- 
-int get_input_int(const char* prompt, int* value) {
-    char buf[32];
-    if(get_input_string(prompt, buf, 32)) {
-        if (parse_int_safe(buf, value)) {
-            return 1;
-        }
-        /* Invalid number - caller can handle message if needed */
+/**
+ * Safely parse an integer from a string.
+ * 
+ * @param str String to parse
+ * @param out Pointer to store parsed value
+ * @return 1 on success, 0 on failure
+ */
+int parse_int_safe(const char* str, int* out) {
+    if (str == NULL || *str == '\0') return 0;
+    char* endptr;
+    long val = strtol(str, &endptr, 10);
+    if (endptr == str) return 0; /* No conversion performed */
+    /* Allow trailing whitespace but nothing else */
+    while (*endptr == ' ' || *endptr == '\t') endptr++;
+    if (*endptr != '\0' && *endptr != '\n' && *endptr != '\r') return 0;
+    if (val > INT_MAX || val < INT_MIN) return 0;
+    *out = (int)val;
+    return 1;
+}
+
+/**
+ * Get condition name safely with bounds checking.
+ * 
+ * @param index Condition index (0 to NUM_CONDITIONS-1)
+ * @return Condition name string, or "Unknown" if index is invalid
+ */
+const char* get_condition_name(int index) {
+    if (index >= 0 && index < NUM_CONDITIONS) {
+        return condition_data[index].name;
     }
+    return "Unknown";
+}
+ 
+/**
+ * Get string input from user with proper cursor management.
+ * 
+ * @param prompt Prompt string to display
+ * @param buffer Buffer to store input (must be at least max_len bytes)
+ * @param max_len Maximum length including null terminator
+ * @return 1 on success (non-empty input), 0 on cancellation or empty input
+ */
+int get_input_string(const char* prompt, char* buffer, int max_len) {
+    if (!buffer || max_len < 1) return 0;
+    
+    int rows, cols_unused;
+    getmaxyx(stdscr, rows, cols_unused);
+    (void)cols_unused; /* Suppress unused variable warning */
+    int input_y = rows - 2;
+    
+    attron(COLOR_PAIR(COLOR_HEADER));
+    mvprintw(input_y, 0, "%s", prompt);
+    clrtoeol();
+    attroff(COLOR_PAIR(COLOR_HEADER));
+    
+    /* Move cursor to after prompt */
+    int prompt_len = (int)strlen(prompt);
+    move(input_y, prompt_len);
+    
+    echo();
+    curs_set(1);
+    refresh();
+    
+    int ret = 0;
+    int ch = getch();
+    if (ch != 27 && ch != '\n' && ch != '\r') { /* Not ESC or Enter */
+        ungetch(ch); /* Put character back for getnstr */
+        if (getnstr(buffer, max_len - 1) != ERR && buffer[0] != '\0') {
+            ret = 1;
+        }
+    }
+    
+    noecho();
+    curs_set(0);
+    
+    /* Clear input line */
+    move(input_y, 0);
+    clrtoeol();
+    refresh();
+    
+    return ret;
+}
+ 
+/**
+ * Get integer input from user with validation and error feedback.
+ * 
+ * @param state Game state for message display
+ * @param prompt Prompt string to display
+ * @param value Pointer to store parsed integer value
+ * @param min_val Minimum allowed value (INT_MIN if no limit)
+ * @param max_val Maximum allowed value (INT_MAX if no limit)
+ * @return 1 on success, 0 on cancellation or invalid input
+ */
+int get_input_int(GameState* state, const char* prompt, int* value, int min_val, int max_val) {
+    char buf[32];
+    int attempts = 0;
+    const int max_attempts = 3;
+    
+    while (attempts < max_attempts) {
+        if (!get_input_string(prompt, buf, sizeof(buf))) {
+            return 0; /* User cancelled */
+        }
+        
+        if (parse_int_safe(buf, value)) {
+            /* Validate range */
+            if (*value < min_val || *value > max_val) {
+                char err_msg[128];
+                snprintf(err_msg, sizeof(err_msg), "Value must be between %d and %d", min_val, max_val);
+                show_message(state, err_msg, 1);
+                attempts++;
+                continue;
+            }
+            return 1; /* Success */
+        }
+        
+        /* Invalid input */
+        show_message(state, "Invalid number! Please enter a valid integer.", 1);
+        attempts++;
+    }
+    
+    /* Too many failed attempts */
+    show_message(state, "Too many invalid attempts. Cancelled.", 1);
     return 0;
 }
  
@@ -1284,24 +1727,46 @@ void clear_old_messages(GameState* state) {
     state->message_queue_count = write_idx;
 }
 
+/**
+ * Draw message queue at the bottom of the screen.
+ * Uses a reserved area to prevent visual artifacts from clearing/redrawing.
+ */
 void draw_message_queue(GameState* state) {
     if (!state || state->message_queue_count == 0) return;
     
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
     
-    /* Draw messages at the bottom of the screen */
-    int y = rows - state->message_queue_count - 1;
-    for (int i = 0; i < state->message_queue_count && y < rows; i++) {
+    /* Reserve bottom area for messages - prevent overlap with content */
+    int message_area_start = rows - MAX_MESSAGE_QUEUE - 1;
+    if (message_area_start < 0) message_area_start = 0;
+    
+    /* Draw messages in reserved area, bottom-up */
+    int y = rows - 1;
+    for (int i = state->message_queue_count - 1; i >= 0 && y >= message_area_start; i--) {
         MessageQueueEntry* entry = &state->message_queue[i];
         int pair = entry->is_error ? COLOR_MSG_ERROR : COLOR_MSG_SUCCESS;
         
-        /* Clear the line first */
-        mvhline(y, 0, ' ', cols);
+        /* Calculate centered position, ensuring it fits */
+        int text_len = (int)strlen(entry->text);
+        int x_start = cols / 2 - text_len / 2 - 1;
+        if (x_start < 0) x_start = 0;
+        if (x_start + text_len + 2 > cols) x_start = cols - text_len - 2;
+        
+        /* Clear only the message area, not the entire line */
+        move(y, 0);
+        clrtoeol();
         
         attron(COLOR_PAIR(pair) | A_BOLD);
-        mvprintw(y, cols/2 - (int)(strlen(entry->text)/2), " %s ", entry->text);
+        mvprintw(y, x_start, " %s ", entry->text);
         attroff(COLOR_PAIR(pair) | A_BOLD);
-        y++;
+        y--;
+    }
+    
+    /* Clear any remaining lines in message area */
+    while (y >= message_area_start && y >= 0) {
+        move(y, 0);
+        clrtoeol();
+        y--;
     }
 }

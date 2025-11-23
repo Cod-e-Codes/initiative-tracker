@@ -10,10 +10,12 @@ A terminal-based initiative tracker for Dungeons & Dragons 5th Edition combat en
 - **Initiative Tracking**: Automatic sorting by initiative and dexterity
 - **HP Tracking**: Visual HP indicators with color coding (Good/Hurt/Critical/Unconscious/Dead)
 - **Death Saving Throws**: Full 5e death save implementation with automatic rolling at start of turn
+- **Interactive Condition Menu**: Overlay menu for easy condition management with navigation
 - **Condition Management**: Apply and track 15 different conditions with optional durations
 - **Turn Management**: Navigate through combat rounds with next/previous turn controls
 - **Combat Logging**: Automatic logging of combat actions with export functionality
 - **Message Queue**: Non-blocking message system for multiple notifications
+- **Help Menu**: Built-in help screen accessible with `?` key
 - **Undo System**: Undo last action (up to 10 states)
 - **Save/Load**: Persist game state between sessions
 - **Color-Coded UI**: Visual distinction between players and enemies
@@ -80,7 +82,7 @@ gcc initiative.c -lncurses -o initiative
 - **A** - Add combatant
 - **D** - Delete selected combatant
 - **H** - Edit HP (heal/damage)
-- **C** - Toggle conditions
+- **C** - Toggle conditions (opens interactive menu)
 - **N** - Next turn
 - **P** - Previous turn
 - **R** - Reroll initiative
@@ -90,7 +92,8 @@ gcc initiative.c -lncurses -o initiative
 - **Z** - Undo last action
 - **S** - Save game state
 - **L** - Load game state
-- **↑/↓** - Navigate selection
+- **↑/↓** or **k/j** - Navigate selection
+- **?** - Show help menu
 - **Q** - Quit
 
 ## Game Rules
@@ -116,6 +119,15 @@ When a player character drops to 0 HP, they begin making death saving throws:
 - **Instant Death**: If damage reduces you to 0 HP and remaining damage ≥ max HP, instant death (no saves)
 - **Stabilization**: Use **T** key to stabilize (simulates Spare the Dying, Medicine check, or Healer's Kit)
 - **Healing**: Any healing resets death saves and removes unconscious condition
+
+### Interactive Condition Menu
+
+Press **C** while a combatant is selected to open an interactive overlay menu:
+- Navigate with **UP/DOWN** or **k/j** keys
+- Toggle conditions with **ENTER** or **SPACE**
+- Set duration with **d** key (for active conditions)
+- Close with **ESC** or **q**
+- Shows all 15 conditions with visual indicators for active ones
 
 ## File Locations
 
