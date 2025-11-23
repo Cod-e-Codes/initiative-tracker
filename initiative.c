@@ -613,12 +613,19 @@ void init_log(GameState* state) {
      }
      c.id = state->next_id++; 
      
-     state->combatants[state->count++] = c;
-     state->selected_id = c.id;
-     if (state->count == 1) state->current_turn_id = c.id;
- 
-     sort_combatants(state);
-     log_action(state, "Added %s: Init %d, HP %d.", c.name, c.initiative, c.max_hp);
+    state->combatants[state->count++] = c;
+    state->selected_id = c.id;
+    if (state->count == 1) state->current_turn_id = c.id;
+
+    sort_combatants(state);
+    
+    /* After sorting, if we're at the start of combat (round 1), 
+       ensure current_turn_id points to the first combatant (highest initiative) */
+    if (state->round == 1 && state->count > 0) {
+        state->current_turn_id = state->combatants[0].id;
+    }
+    
+    log_action(state, "Added %s: Init %d, HP %d.", c.name, c.initiative, c.max_hp);
  }
  
  void remove_combatant(GameState* state) {
@@ -702,13 +709,20 @@ void init_log(GameState* state) {
      int idx = get_index_by_id(state, state->selected_id);
      if (idx == -1) return;
  
-     int val;
-     if (get_input_int("New Init: ", &val)) {
-         int old_init = state->combatants[idx].initiative;
-         state->combatants[idx].initiative = val;
-         sort_combatants(state);
-         log_action(state, "%s rerolled initiative from %d to %d.", state->combatants[idx].name, old_init, val);
-     }
+    int val;
+    if (get_input_int("New Init: ", &val)) {
+        int old_init = state->combatants[idx].initiative;
+        state->combatants[idx].initiative = val;
+        sort_combatants(state);
+        
+        /* After sorting, if we're at the start of combat (round 1), 
+           ensure current_turn_id points to the first combatant (highest initiative) */
+        if (state->round == 1 && state->count > 0) {
+            state->current_turn_id = state->combatants[0].id;
+        }
+        
+        log_action(state, "%s rerolled initiative from %d to %d.", state->combatants[idx].name, old_init, val);
+    }
  }
  
  void next_turn(GameState* state) {

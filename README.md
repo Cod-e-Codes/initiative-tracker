@@ -2,6 +2,8 @@
 
 A terminal-based initiative tracker for Dungeons & Dragons 5th Edition combat encounters, built with C and ncurses.
 
+![Screenshot](screenshot.png)
+
 ## Features
 
 - **Combatant Management**: Add, remove, and manage players and enemies
