@@ -1,0 +1,27 @@
+# Compiled binaries
+initiative
+initiative.exe
+*.exe
+*.o
+*.obj
+
+# Build artifacts
+*.a
+*.so
+*.dylib
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Save files (optional - uncomment if you don't want to track saves)
+# .dnd_tracker_save.txt
+# combat_log_export.txt
+
