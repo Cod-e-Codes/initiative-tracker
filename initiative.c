@@ -13,6 +13,7 @@
 #include <limits.h>
 #include <time.h>
 #include <stdarg.h>
+#include <errno.h>
  
 #define MAX_COMBATANTS 50
 #define NAME_LENGTH 32
@@ -1278,61 +1279,106 @@ void save_state(GameState* state) {
     while (fgets(line, sizeof(line), f) && idx < MAX_COMBATANTS) {
         Combatant* c = &state->combatants[idx];
         
+        /* Parse required fields - skip entire entry if any fail */
         char* token = strtok(line, "|");
-        if (!token) break;
-        c->id = atoi(token);
+        if (!token || !parse_int_safe(token, &c->id)) {
+            show_message(state, "Load warning: Skipping malformed combatant entry (invalid ID).", 1);
+            continue;
+        }
 
         token = strtok(NULL, "|");
-        if (!token) break;
+        if (!token) {
+            show_message(state, "Load warning: Skipping malformed combatant entry (missing name).", 1);
+            continue;
+        }
         strncpy(c->name, token, NAME_LENGTH);
         c->name[NAME_LENGTH-1] = '\0';
 
         token = strtok(NULL, "|");
-        if (!token) break;
-        c->type = atoi(token);
+        int type_val;
+        if (!token || !parse_int_safe(token, &type_val)) {
+            show_message(state, "Load warning: Skipping malformed combatant entry (invalid type).", 1);
+            continue;
+        }
+        c->type = (CombatantType)type_val;
 
         token = strtok(NULL, "|");
-        if (!token) break;
-        c->initiative = atoi(token);
+        if (!token || !parse_int_safe(token, &c->initiative)) {
+            show_message(state, "Load warning: Skipping malformed combatant entry (invalid initiative).", 1);
+            continue;
+        }
 
         token = strtok(NULL, "|");
-        if (!token) break;
-        c->dex = atoi(token);
+        if (!token || !parse_int_safe(token, &c->dex)) {
+            show_message(state, "Load warning: Skipping malformed combatant entry (invalid dex).", 1);
+            continue;
+        }
 
         token = strtok(NULL, "|");
-        if (!token) break;
-        c->max_hp = atoi(token);
+        if (!token || !parse_int_safe(token, &c->max_hp)) {
+            show_message(state, "Load warning: Skipping malformed combatant entry (invalid max_hp).", 1);
+            continue;
+        }
 
         token = strtok(NULL, "|");
-        if (!token) break;
-        c->hp = atoi(token);
+        if (!token || !parse_int_safe(token, &c->hp)) {
+            show_message(state, "Load warning: Skipping malformed combatant entry (invalid hp).", 1);
+            continue;
+        }
 
         token = strtok(NULL, "|");
-        if (!token) break;
-        c->conditions = (uint16_t)atoi(token);
+        int conditions_val;
+        if (!token || !parse_int_safe(token, &conditions_val)) {
+            show_message(state, "Load warning: Skipping malformed combatant entry (invalid conditions).", 1);
+            continue;
+        }
+        c->conditions = (uint16_t)conditions_val;
         
         /* Backward compatibility: death save fields may be missing in old saves */
         token = strtok(NULL, "|");
-        if (token) c->death_save_successes = atoi(token);
-        else c->death_save_successes = 0;
-        
-        token = strtok(NULL, "|");
-        if (token) c->death_save_failures = atoi(token);
-        else c->death_save_failures = 0;
-        
-        token = strtok(NULL, "|");
-        if (token) c->is_stable = atoi(token);
-        else c->is_stable = 0;
-        
-        token = strtok(NULL, "|");
-        if (token) c->is_dead = atoi(token);
-        else c->is_dead = 0;
- 
-         for(int j=0; j<NUM_CONDITIONS; j++) {
-             token = strtok(NULL, "|");
-             if (!token) break;
-             c->condition_duration[j] = atoi(token);
+        if (token) {
+            if (!parse_int_safe(token, &c->death_save_successes)) {
+                c->death_save_successes = 0;  /* Default on parse failure */
+            }
+        } else {
+            c->death_save_successes = 0;
         }
+        
+        token = strtok(NULL, "|");
+        if (token) {
+            if (!parse_int_safe(token, &c->death_save_failures)) {
+                c->death_save_failures = 0;  /* Default on parse failure */
+            }
+        } else {
+            c->death_save_failures = 0;
+        }
+        
+        token = strtok(NULL, "|");
+        if (token) {
+            if (!parse_int_safe(token, &c->is_stable)) {
+                c->is_stable = 0;  /* Default on parse failure */
+            }
+        } else {
+            c->is_stable = 0;
+        }
+        
+        token = strtok(NULL, "|");
+        if (token) {
+            if (!parse_int_safe(token, &c->is_dead)) {
+                c->is_dead = 0;  /* Default on parse failure */
+            }
+        } else {
+            c->is_dead = 0;
+        }
+ 
+        for(int j=0; j<NUM_CONDITIONS; j++) {
+            token = strtok(NULL, "|");
+            if (!token) break;
+            if (!parse_int_safe(token, &c->condition_duration[j])) {
+                c->condition_duration[j] = 0;  /* Default on parse failure */
+            }
+        }
+        
         idx++;
     }
     state->count = idx;
@@ -1524,19 +1570,33 @@ void sort_combatants(GameState* state) {
 /**
  * Safely parse an integer from a string.
  * 
- * @param str String to parse
- * @param out Pointer to store parsed value
- * @return 1 on success, 0 on failure
+ * @param str Input string to parse (must not be NULL)
+ * @param out Pointer to store parsed value (must not be NULL)
+ * @return 1 on success, 0 on failure (invalid format, overflow, etc.)
+ * 
+ * NOTE: Accepts optional leading/trailing whitespace.
+ * Returns 0 for: NULL input, empty string, non-numeric characters,
+ * overflow/underflow beyond INT_MIN/INT_MAX.
  */
 int parse_int_safe(const char* str, int* out) {
     if (str == NULL || *str == '\0') return 0;
+    
     char* endptr;
+    errno = 0;  /* Reset errno before call */
     long val = strtol(str, &endptr, 10);
-    if (endptr == str) return 0; /* No conversion performed */
-    /* Allow trailing whitespace but nothing else */
+    
+    /* Check for conversion errors */
+    if (endptr == str) return 0;  /* No digits parsed */
+    
+    /* Skip trailing whitespace */
     while (*endptr == ' ' || *endptr == '\t') endptr++;
+    
+    /* Ensure entire string was consumed (except whitespace) */
     if (*endptr != '\0' && *endptr != '\n' && *endptr != '\r') return 0;
-    if (val > INT_MAX || val < INT_MIN) return 0;
+    
+    /* Check for overflow/underflow */
+    if (errno == ERANGE || val > INT_MAX || val < INT_MIN) return 0;
+    
     *out = (int)val;
     return 1;
 }
