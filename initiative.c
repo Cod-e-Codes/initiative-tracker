@@ -1387,6 +1387,18 @@ void save_state(GameState* state) {
         show_message(state, "Load warning: Error closing file.", 1);
     }
     
+    /* Recalculate next_id to prevent collisions from corrupt/manually edited save files */
+    int max_id = 0;
+    for (int i = 0; i < state->count; i++) {
+        if (state->combatants[i].id > max_id) {
+            max_id = state->combatants[i].id;
+        }
+    }
+    state->next_id = max_id + 1;
+    if (state->next_id <= 0 || state->next_id == INT_MAX) {
+        state->next_id = 1;  /* Fallback to 1 if overflow or invalid */
+    }
+    
     sort_combatants(state);
     state->message_queue_count = 0;
     
