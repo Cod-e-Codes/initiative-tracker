@@ -864,15 +864,18 @@ void init_log(GameState* state) {
              token = strtok(NULL, "|");
              if (!token) break;
              c->condition_duration[j] = atoi(token);
-         }
-         idx++;
-     }
-     state->count = idx;
-     fclose(f);
-     
-     log_action(state, "Game Loaded from save file. Round set to %d.", state->round);
-     show_message("Game Loaded.", 0);
- }
+        }
+        idx++;
+    }
+    state->count = idx;
+    fclose(f);
+    
+    /* Sort combatants by initiative after loading */
+    sort_combatants(state);
+    
+    log_action(state, "Game Loaded from save file. Round set to %d.", state->round);
+    show_message("Game Loaded.", 0);
+}
  
  /* --- Helper Functions --- */
  
