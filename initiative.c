@@ -711,7 +711,7 @@ void draw_condition_menu(GameState* state) {
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
 
-    int menu_height = NUM_CONDITIONS + 5; /* Extra line for instructions */
+    int menu_height = NUM_CONDITIONS + 6; /* Title + separators + instruction line + footer */
     int menu_width = 60; /* Wider to fit instructions */
     int start_y = (rows - menu_height) / 2;
     int start_x = (cols - menu_width) / 2;
@@ -732,18 +732,17 @@ void draw_condition_menu(GameState* state) {
 
     mvhline(start_y + 1, start_x, ACS_HLINE, menu_width);
     
-    /* Split instructions into two lines to fit */
+    /* Instructions */
     attron(COLOR_PAIR(COLOR_DEFAULT) | A_DIM);
     mvprintw(start_y + 2, start_x + 2, "UP/DOWN: Navigate | ENTER: Toggle | 'd': Duration");
-    mvprintw(start_y + 3, start_x + 2, "ESC or 'q': Done");
     attroff(COLOR_PAIR(COLOR_DEFAULT) | A_DIM);
     
-    mvhline(start_y + 4, start_x, ACS_HLINE, menu_width);
+    mvhline(start_y + 3, start_x, ACS_HLINE, menu_width);
 
     for (int i = 0; i < NUM_CONDITIONS; i++) {
         int is_active = c->conditions & (1 << i);
         int is_selected = (i == state->condition_menu_cursor);
-        int y = start_y + 5 + i; /* Start after instructions */
+        int y = start_y + 4 + i; /* Start after instructions */
 
         int pair = is_selected ? COLOR_MENU_SEL : COLOR_MENU_NORM;
         attron(COLOR_PAIR(pair));
@@ -758,6 +757,12 @@ void draw_condition_menu(GameState* state) {
         if (is_selected) attroff(A_BOLD);
         attroff(COLOR_PAIR(pair));
     }
+    
+    /* Footer with close instruction */
+    mvhline(start_y + menu_height - 2, start_x, ACS_HLINE, menu_width);
+    attron(COLOR_PAIR(COLOR_SEPARATOR));
+    mvprintw(start_y + menu_height - 1, start_x + (menu_width - 20) / 2, "ESC or 'q' to close");
+    attroff(COLOR_PAIR(COLOR_SEPARATOR));
 }
 
 /**
