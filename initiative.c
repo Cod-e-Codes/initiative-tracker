@@ -5,20 +5,22 @@
  * Run: ./initiative
  */
 
- #include <ncurses.h>
- #include <string.h>
- #include <stdlib.h>
- #include <ctype.h>
- #include <stdint.h>
- #include <limits.h>
- #include <time.h>
- #include <stdarg.h>
+#include <ncurses.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <stdint.h>
+#include <limits.h>
+#include <time.h>
+#include <stdarg.h>
  
- #define MAX_COMBATANTS 50
- #define NAME_LENGTH 32
- #define NUM_CONDITIONS 15
- #define SAVE_FILE_NAME ".dnd_tracker_save.txt"
- #define LOG_EXPORT_FILE_NAME "combat_log_export.txt"
+#define MAX_COMBATANTS 50
+#define NAME_LENGTH 32
+#define NUM_CONDITIONS 15
+#define SAVE_FILE_NAME ".dnd_tracker_save.txt"
+#define LOG_EXPORT_FILE_NAME "combat_log_export.txt"
+#define MAX_MESSAGE_QUEUE 5
+#define MESSAGE_DISPLAY_TIME 1500 /* milliseconds */
  
  /* Conditions as bit flags */
  typedef enum {
@@ -50,17 +52,22 @@
      TYPE_ENEMY = 1
  } CombatantType;
  
- typedef struct {
-     int id;                 
-     char name[NAME_LENGTH];
-     int initiative;
-     int dex;                
-     int max_hp;
-     int hp;
-     CombatantType type;
-     uint16_t conditions;
-     int condition_duration[NUM_CONDITIONS];
- } Combatant;
+typedef struct {
+    int id;                 
+    char name[NAME_LENGTH];
+    int initiative;
+    int dex;                
+    int max_hp;
+    int hp;
+    CombatantType type;
+    uint16_t conditions;
+    int condition_duration[NUM_CONDITIONS];
+    /* Death Save Tracking */
+    int death_save_successes;
+    int death_save_failures;
+    int is_stable;  /* 1 if stable at 0 HP, 0 otherwise */
+    int is_dead;    /* 1 if dead, 0 otherwise */
+} Combatant;
  
  /* Log Entry Structure */
  typedef struct {
@@ -70,16 +77,23 @@
      char message[128];
  } CombatLogEntry;
  
- /* Undo State Structure - Stores a snapshot of key data for undo */
- typedef struct {
-     Combatant combatants[MAX_COMBATANTS];
-     int count;
-     int current_turn_id;
-     int selected_id;
-     int round;
- } UndoState;
- 
- #define MAX_UNDO_STACK 10 /* Keep the last 10 states */
+/* Undo State Structure - Stores a snapshot of key data for undo */
+typedef struct {
+    Combatant combatants[MAX_COMBATANTS];
+    int count;
+    int current_turn_id;
+    int selected_id;
+    int round;
+} UndoState;
+
+#define MAX_UNDO_STACK 10 /* Keep the last 10 states */
+
+/* Message Queue Structure */
+typedef struct {
+    char text[128];
+    int is_error;
+    time_t timestamp;
+} MessageQueueEntry;
  
  typedef struct {
      Combatant combatants[MAX_COMBATANTS];
@@ -94,10 +108,14 @@
      int log_count;
      int log_capacity;
  
-     /* Undo Stack */
-     UndoState undo_stack[MAX_UNDO_STACK];
-     int undo_count;
- } GameState;
+    /* Undo Stack */
+    UndoState undo_stack[MAX_UNDO_STACK];
+    int undo_count;
+    
+    /* Message Queue */
+    MessageQueueEntry message_queue[MAX_MESSAGE_QUEUE];
+    int message_queue_count;
+} GameState;
  
  /* Color pairs */
  enum {
@@ -119,25 +137,29 @@
      COLOR_MSG_ERROR
  };
  
- /* Prototypes */
- void init_colors(void);
- void init_log(GameState* state);
- void cleanup_log(GameState* state);
- void draw_ui(GameState* state);
- void draw_filtered_list(GameState* state, int start_y, int start_x, int width, int height, CombatantType type);
- void add_combatant(GameState* state);
- void remove_combatant(GameState* state);
- void edit_hp(GameState* state);
- void reroll_initiative(GameState* state);
- void toggle_condition(GameState* state);
- void next_turn(GameState* state);
- void prev_turn(GameState* state);
- void move_selection(GameState* state, int direction); 
- void sort_combatants(GameState* state);
- int compare_combatants(const void* a, const void* b);
- void decrement_condition_durations(GameState* state);
- void save_state(GameState* state);
- void load_state(GameState* state);
+/* Prototypes */
+void init_colors(void);
+void init_log(GameState* state);
+void cleanup_log(GameState* state);
+void draw_ui(GameState* state);
+void draw_filtered_list(GameState* state, int start_y, int start_x, int width, int height, CombatantType type);
+void add_combatant(GameState* state);
+void remove_combatant(GameState* state);
+void edit_hp(GameState* state);
+void reroll_initiative(GameState* state);
+void toggle_condition(GameState* state);
+void next_turn(GameState* state);
+void prev_turn(GameState* state);
+void move_selection(GameState* state, int direction); 
+void sort_combatants(GameState* state);
+int compare_combatants(const void* a, const void* b);
+void decrement_condition_durations(GameState* state);
+void save_state(GameState* state);
+void load_state(GameState* state);
+void roll_death_save(GameState* state, Combatant* c);
+void reset_death_saves(Combatant* c);
+void handle_damage_at_zero_hp(GameState* state, Combatant* c, int damage, int is_critical);
+void stabilize_combatant(GameState* state);
  
  /* New Feature Prototypes */
  void log_action(GameState* state, const char* format, ...);
@@ -150,19 +172,25 @@
  int get_input_int(const char* prompt, int* value);
  int get_input_char(const char* prompt, const char* allowed);
  int get_input_confirm(const char* prompt);
- void show_message(const char* msg, int is_error);
- int get_index_by_id(GameState* state, int id);
- int parse_int_safe(const char* str, int* out);
+void show_message(GameState* state, const char* msg, int is_error);
+void draw_message_queue(GameState* state);
+void clear_old_messages(GameState* state);
+int get_index_by_id(GameState* state, int id);
+int parse_int_safe(const char* str, int* out);
  
- int main(void) {
-     GameState state = {0};
-     state.round = 1;
-     state.next_id = 1;
-     state.current_turn_id = -1;
-     state.selected_id = -1;
-     init_log(&state); /* Initialize dynamic log array */
- 
-     initscr();
+int main(void) {
+    GameState state = {0};
+    state.round = 1;
+    state.next_id = 1;
+    state.current_turn_id = -1;
+    state.selected_id = -1;
+    state.message_queue_count = 0;
+    init_log(&state); /* Initialize dynamic log array */
+    
+    /* Initialize random seed for death saves */
+    srand((unsigned int)time(NULL));
+
+    initscr();
      cbreak();
      noecho();
      keypad(stdscr, TRUE);
@@ -189,8 +217,10 @@
              case 'p': if (state.count > 0) { save_undo_state(&state); prev_turn(&state); } break;
              case 's': save_state(&state); break;
              case 'l': load_state(&state); break; 
-             case 'e': if (state.log_count > 0) export_log(&state); break; /* Export Log */
-             case 'z': undo_last_action(&state); break; /* Undo */
+            case 'e': if (state.log_count > 0) export_log(&state); break; /* Export Log */
+            case 'z': undo_last_action(&state); break; /* Undo */
+            case 'x': if (state.count > 0) { save_undo_state(&state); roll_death_save(&state, NULL); } break; /* Manual Death Save */
+            case 't': if (state.count > 0) { save_undo_state(&state); stabilize_combatant(&state); } break; /* Stabilize */
              case KEY_UP:
                  if (state.count > 0) move_selection(&state, -1);
                  break;
@@ -281,7 +311,7 @@ void init_log(GameState* state) {
  
      FILE* f = fopen(path, "a"); /* Append mode for session notes */
      if (!f) {
-         show_message("Log export failed!", 1);
+         show_message(state, "Log export failed!", 1);
          return;
      }
  
@@ -304,7 +334,7 @@ void init_log(GameState* state) {
  
      /* Clear log after successful export */
      state->log_count = 0;
-     show_message("Log Exported and Cleared!", 0);
+     show_message(state, "Log Exported and Cleared!", 0);
  }
  
  /* --- Undo Functions --- */
@@ -330,7 +360,7 @@ void init_log(GameState* state) {
  
  void undo_last_action(GameState* state) {
      if (state->undo_count == 0) {
-         show_message("Nothing to undo!", 1);
+         show_message(state, "Nothing to undo!", 1);
          return;
      }
  
@@ -347,33 +377,38 @@ void init_log(GameState* state) {
      /* Log the undo event */
      log_action(state, "Action UNDONE. Reverted to start of Round %d.", state->round);
      
-     show_message("Undo successful!", 0);
+     show_message(state, "Undo successful!", 0);
  }
  
  /* --- TUI/Core Functions --- */
  
- void draw_ui(GameState* state) {
-     int rows, cols;
-     getmaxyx(stdscr, rows, cols);
-     clear();
+void draw_ui(GameState* state) {
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+    clear();
+    
+    /* Clear old messages from queue */
+    clear_old_messages(state);
+
+    /* Header - Two lines */
+    attron(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
+    mvhline(0, 0, ' ', cols);
+    mvprintw(0, 1, "D&D INITIATIVE TRACKER | Round: %d", state->round);
+    mvhline(1, 0, ' ', cols);
+    mvprintw(1, 1, "Keys: A(dd) D(el) H(eal) C(ond) N(ext) P(rev) R(eroll) X(death) T(stabilize) E(xport) Z(undo) S(ave) L(oad) Q(uit)");
+    attroff(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
+
+    /* Split Screen Calculation */
+    int split_y = rows / 2;
+    /* list_height is adjusted to account for the two header lines */
+    int list_height = split_y - 4;
  
-     /* Header */
-     attron(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
-     mvhline(0, 0, ' ', cols);
-     mvprintw(0, 1, "D&D INITIATIVE TRACKER | Round: %d | Keys: A(dd) D(el) H(eal) C(ond) N(ext) R(eroll) E(xport) Z(undo) S(ave) L(oad)", state->round);
-     attroff(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
- 
-     /* Split Screen Calculation */
-     int split_y = rows / 2;
-     /* list_height is adjusted to account for the new header line (1 row vs 2 rows previously) */
-     int list_height = split_y - 3; 
- 
-     /* Top: Players - inline with separator */
-     mvhline(1, 0, ACS_HLINE, cols); /* Draw the separating line */
-     attron(A_BOLD);
-     mvprintw(1, 2, "[ PLAYERS ]"); /* Draw text over the line */
-     attroff(A_BOLD);
-     draw_filtered_list(state, 2, 0, cols, list_height, TYPE_PLAYER);
+    /* Top: Players - inline with separator */
+    mvhline(2, 0, ACS_HLINE, cols); /* Draw the separating line */
+    attron(A_BOLD);
+    mvprintw(2, 2, "[ PLAYERS ]"); /* Draw text over the line */
+    attroff(A_BOLD);
+    draw_filtered_list(state, 3, 0, cols, list_height, TYPE_PLAYER);
  
      /* Separator (Middle Line) */
      attron(COLOR_PAIR(COLOR_SEPARATOR));
@@ -385,17 +420,20 @@ void init_log(GameState* state) {
      mvprintw(split_y, 2, "[ ENEMIES ]");
      attroff(A_BOLD);
  
-     draw_filtered_list(state, split_y + 1, 0, cols, rows - split_y - 1, TYPE_ENEMY);
- 
-     refresh();
- }
+    draw_filtered_list(state, split_y + 1, 0, cols, rows - split_y - 1, TYPE_ENEMY);
+    
+    /* Draw message queue */
+    draw_message_queue(state);
+
+    refresh();
+}
  
  void draw_filtered_list(GameState* state, int start_y, int start_x, int width, int height, CombatantType type) {
      if (state->count == 0) return;
  
      /* Column Headers */
      attron(A_UNDERLINE);
-     mvprintw(start_y, start_x + 2, "%-20s %4s %4s %8s %s", "Name", "Init", "Dex", "HP", "Conditions");
+     mvprintw(start_y, start_x + 2, "%-20s %4s %4s %8s %12s %s", "Name", "Init", "Dex", "HP", "Death Saves", "Conditions");
      attroff(A_UNDERLINE);
  
      int type_count = 0;
@@ -456,16 +494,18 @@ void init_log(GameState* state) {
          /* HP Visual Logic*/
          int hp_color = COLOR_HP_GOOD;
          
-         if (c->hp <= 0) {
-             /* 5e Rule: Enemies die, Players go Unconscious */
-             if (c->type == TYPE_ENEMY) hp_color = COLOR_DEAD;
+         if (c->hp <= 0 || c->is_dead) {
+             /* 5e Rule: Enemies die, Players go Unconscious (unless dead) */
+             if (c->type == TYPE_ENEMY || c->is_dead) hp_color = COLOR_DEAD;
              else hp_color = COLOR_HP_UNCONSCIOUS;
          }
          else if (c->hp <= c->max_hp / 4) hp_color = COLOR_HP_CRITICAL;
          else if (c->hp <= c->max_hp / 2) hp_color = COLOR_HP_HURT;
- 
+
          attron(COLOR_PAIR(hp_color));
-         if (c->hp <= 0 && c->type == TYPE_PLAYER) {
+         if (c->is_dead) {
+             mvprintw(y, start_x + 33, "%s", " DEAD  ");
+         } else if (c->hp <= 0 && c->type == TYPE_PLAYER) {
              mvprintw(y, start_x + 33, "%s", " DOWN  ");
          } else if (c->hp <= 0 && c->type == TYPE_ENEMY) {
              mvprintw(y, start_x + 33, "%s", " DEAD  ");
@@ -473,7 +513,24 @@ void init_log(GameState* state) {
              mvprintw(y, start_x + 33, "%3d/%3d", c->hp, c->max_hp);
          }
          attroff(COLOR_PAIR(hp_color));
- 
+
+         /* Death Saves Display (only for players at 0 HP) */
+         if (c->type == TYPE_PLAYER && c->hp <= 0 && !c->is_dead) {
+             if (c->is_stable) {
+                 mvprintw(y, start_x + 42, "STABLE");
+             } else {
+                 char ds_str[16];
+                 snprintf(ds_str, sizeof(ds_str), "S:%d F:%d", c->death_save_successes, c->death_save_failures);
+                 mvprintw(y, start_x + 42, "%-12s", ds_str);
+             }
+         } else if (c->is_dead) {
+             attron(COLOR_PAIR(COLOR_DEAD));
+             mvprintw(y, start_x + 42, "DEAD");
+             attroff(COLOR_PAIR(COLOR_DEAD));
+         } else {
+             mvprintw(y, start_x + 42, "            "); /* Clear space */
+         }
+
          /* Conditions */
          char cond_str[128] = "";
          for (int j = 0; j < NUM_CONDITIONS; j++) {
@@ -486,9 +543,9 @@ void init_log(GameState* state) {
                  strcat(cond_str, temp);
              }
          }
-         int remaining_w = width - 45;
+         int remaining_w = width - 55;
          if (remaining_w > 0)
-             mvprintw(y, start_x + 43, "%.*s", remaining_w, cond_str);
+             mvprintw(y, start_x + 54, "%.*s", remaining_w, cond_str);
  
          y++;
      }
@@ -575,7 +632,7 @@ void init_log(GameState* state) {
                           }
                      }
                  } else {
-                     show_message("Enable condition first!", 1);
+                     show_message(state, "Enable condition first!", 1);
                  }
                  break;
              case 'q':
@@ -589,24 +646,28 @@ void init_log(GameState* state) {
  
  void add_combatant(GameState* state) {
      if (state->count >= MAX_COMBATANTS) {
-         show_message("List full!", 1);
+         show_message(state, "List full!", 1);
          return;
      }
  
-     Combatant c = {0};
-     int type_char = get_input_char("Type? (P)layer / (E)nemy: ", "pePE");
-     if (type_char == 0) return; 
- 
-     c.type = (tolower(type_char) == 'p') ? TYPE_PLAYER : TYPE_ENEMY;
- 
-     if (!get_input_string("Name: ", c.name, NAME_LENGTH)) return;
-     if (!get_input_int("Initiative: ", &c.initiative)) return;
-     if (!get_input_int("Dexterity (Tiebreaker): ", &c.dex)) return;
-     
-     int max_hp;
-     if (!get_input_int("Max HP: ", &max_hp)) return;
-     c.max_hp = max_hp;
-     c.hp = c.max_hp;
+    Combatant c = {0};
+    int type_char = get_input_char("Type? (P)layer / (E)nemy: ", "pePE");
+    if (type_char == 0) return; 
+
+    c.type = (tolower(type_char) == 'p') ? TYPE_PLAYER : TYPE_ENEMY;
+
+    if (!get_input_string("Name: ", c.name, NAME_LENGTH)) return;
+    if (!get_input_int("Initiative: ", &c.initiative)) return;
+    if (!get_input_int("Dexterity (Tiebreaker): ", &c.dex)) return;
+    
+    int max_hp;
+    if (!get_input_int("Max HP: ", &max_hp)) return;
+    c.max_hp = max_hp;
+    c.hp = c.max_hp;
+    c.death_save_successes = 0;
+    c.death_save_failures = 0;
+    c.is_stable = 0;
+    c.is_dead = 0;
  
      if (state->next_id == INT_MAX) {
          state->next_id = 1;
@@ -663,47 +724,79 @@ void init_log(GameState* state) {
      }
  }
  
- void edit_hp(GameState* state) {
-     int idx = get_index_by_id(state, state->selected_id);
-     if (idx == -1) return;
-     
-     Combatant* c = &state->combatants[idx];
-     char prompt[64];
-     snprintf(prompt, 64, "%s (%d/%d) Change (+/-): ", c->name, c->hp, c->max_hp);
-     
-     int change;
-     if (get_input_int(prompt, &change)) {
-         
-         int old_hp = c->hp;
-         
-         c->hp += change;
-         if (c->hp > c->max_hp) c->hp = c->max_hp;
-         if (c->hp < 0) c->hp = 0;
-         
-         if (change > 0) {
-             log_action(state, "%s healed %d HP (%d/%d).", c->name, change, c->hp, c->max_hp);
-         } else if (change < 0) {
-             log_action(state, "%s took %d damage (%d/%d).", c->name, -change, c->hp, c->max_hp);
-         }
- 
-         /* 5e Rule: Player Unconscious on 0 HP */
-         if (c->type == TYPE_PLAYER) {
-             if (c->hp == 0 && old_hp > 0) {
-                 if (!(c->conditions & COND_UNCONSCIOUS)) {
-                     c->conditions |= COND_UNCONSCIOUS;
-                     show_message("Player is DOWN! (Unconscious applied)", 1);
-                     log_action(state, "%s is UNCONSCIOUS.", c->name);
-                 }
-            } else if (c->hp > 0 && old_hp <= 0) {
-                if (c->conditions & COND_UNCONSCIOUS) {
-                    c->conditions &= (uint16_t)~COND_UNCONSCIOUS;
-                    show_message("Player is UP! (Unconscious removed)", 0);
-                    log_action(state, "%s is no longer unconscious.", c->name);
-                }
+void edit_hp(GameState* state) {
+    int idx = get_index_by_id(state, state->selected_id);
+    if (idx == -1) return;
+    
+    Combatant* c = &state->combatants[idx];
+    char prompt[64];
+    snprintf(prompt, 64, "%s (%d/%d) Change (+/-): ", c->name, c->hp, c->max_hp);
+    
+    int change;
+    if (get_input_int(prompt, &change)) {
+        
+        int old_hp = c->hp;
+        int damage = (change < 0) ? -change : 0;
+        
+        /* Check for instant death before applying damage */
+        if (damage > 0 && c->hp > 0 && (c->hp - damage) <= 0) {
+            int remaining_damage = damage - c->hp;
+            if (remaining_damage >= c->max_hp) {
+                /* Instant death: damage equals or exceeds max HP */
+                c->hp = 0;
+                c->is_dead = 1;
+                c->conditions |= COND_UNCONSCIOUS;
+                reset_death_saves(c);
+                show_message(state, "INSTANT DEATH!", 1);
+                log_action(state, "%s died instantly (damage >= max HP).", c->name);
+                return;
             }
-         }
-     }
- }
+        }
+        
+        c->hp += change;
+        if (c->hp > c->max_hp) c->hp = c->max_hp;
+        if (c->hp < 0) c->hp = 0;
+        
+        /* Handle damage at 0 HP (death save failures) */
+        if (damage > 0 && old_hp <= 0 && c->type == TYPE_PLAYER && !c->is_dead) {
+            /* Ask if it was a critical hit (within 5 feet = auto crit) */
+            int is_crit = 0;
+            if (c->hp == 0) { /* Still at 0 HP after damage */
+                char crit_prompt[128];
+                snprintf(crit_prompt, sizeof(crit_prompt), "Critical hit? (y/n): ");
+                is_crit = get_input_confirm(crit_prompt);
+            }
+            handle_damage_at_zero_hp(state, c, damage, is_crit);
+        }
+        
+        if (change > 0) {
+            log_action(state, "%s healed %d HP (%d/%d).", c->name, change, c->hp, c->max_hp);
+        } else if (change < 0) {
+            log_action(state, "%s took %d damage (%d/%d).", c->name, damage, c->hp, c->max_hp);
+        }
+
+        /* 5e Rule: Player Unconscious on 0 HP */
+        if (c->type == TYPE_PLAYER) {
+            if (c->hp == 0 && old_hp > 0) {
+                if (!(c->conditions & COND_UNCONSCIOUS)) {
+                    c->conditions |= COND_UNCONSCIOUS;
+                    reset_death_saves(c); /* Reset death saves when first going to 0 HP */
+                    show_message(state, "Player is DOWN! (Unconscious applied)", 1);
+                    log_action(state, "%s is UNCONSCIOUS.", c->name);
+                }
+           } else if (c->hp > 0 && old_hp <= 0) {
+               if (c->conditions & COND_UNCONSCIOUS) {
+                   c->conditions &= (uint16_t)~COND_UNCONSCIOUS;
+                   reset_death_saves(c); /* Reset death saves when healed */
+                   c->is_stable = 0;
+                   c->is_dead = 0;
+                   show_message(state, "Player is UP! (Unconscious removed)", 0);
+                   log_action(state, "%s is no longer unconscious.", c->name);
+               }
+           }
+        }
+    }
+}
  
  void reroll_initiative(GameState* state) {
      int idx = get_index_by_id(state, state->selected_id);
@@ -725,24 +818,31 @@ void init_log(GameState* state) {
     }
  }
  
- void next_turn(GameState* state) {
-     if (state->count == 0) return;
- 
-     int idx = get_index_by_id(state, state->current_turn_id);
-     if (idx == -1) idx = 0;
-     else idx++;
- 
-     if (idx >= state->count) {
-         idx = 0;
-         state->round++;
-         decrement_condition_durations(state);
-         log_action(state, "--- START OF ROUND %d ---", state->round);
-     }
-     
-     state->current_turn_id = state->combatants[idx].id;
-     state->selected_id = state->current_turn_id;
-     log_action(state, "%s's turn.", state->combatants[idx].name);
- }
+void next_turn(GameState* state) {
+    if (state->count == 0) return;
+
+    int idx = get_index_by_id(state, state->current_turn_id);
+    if (idx == -1) idx = 0;
+    else idx++;
+
+    if (idx >= state->count) {
+        idx = 0;
+        state->round++;
+        decrement_condition_durations(state);
+        log_action(state, "--- START OF ROUND %d ---", state->round);
+    }
+    
+    state->current_turn_id = state->combatants[idx].id;
+    state->selected_id = state->current_turn_id;
+    
+    Combatant* c = &state->combatants[idx];
+    log_action(state, "%s's turn.", c->name);
+    
+    /* Automatic death save at start of turn if player is at 0 HP */
+    if (c->type == TYPE_PLAYER && c->hp <= 0 && !c->is_stable && !c->is_dead) {
+        roll_death_save(state, c);
+    }
+}
  
  void prev_turn(GameState* state) {
      if (state->count == 0) return;
@@ -786,7 +886,7 @@ void init_log(GameState* state) {
  
      FILE* f = fopen(path, "w");
      if (!f) {
-         show_message("Save failed!", 1);
+         show_message(state, "Save failed!", 1);
          return;
      }
  
@@ -795,8 +895,9 @@ void init_log(GameState* state) {
  
      for (int i = 0; i < state->count; i++) {
          Combatant* c = &state->combatants[i];
-         fprintf(f, "%d|%s|%d|%d|%d|%d|%d|%d",
-             c->id, c->name, c->type, c->initiative, c->dex, c->max_hp, c->hp, c->conditions);
+         fprintf(f, "%d|%s|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+             c->id, c->name, c->type, c->initiative, c->dex, c->max_hp, c->hp, c->conditions,
+             c->death_save_successes, c->death_save_failures, c->is_stable, c->is_dead);
          
          for(int j=0; j<NUM_CONDITIONS; j++) {
              fprintf(f, "|%d", c->condition_duration[j]);
@@ -805,7 +906,7 @@ void init_log(GameState* state) {
      }
  
      fclose(f);
-     show_message("Game Saved.", 0);
+     show_message(state, "Game Saved.", 0);
  }
  
  void load_state(GameState* state) {
@@ -821,7 +922,7 @@ void init_log(GameState* state) {
  
      FILE* f = fopen(path, "r");
      if (!f) {
-         show_message("No save file found.", 1);
+         show_message(state, "No save file found.", 1);
          return;
      }
  
@@ -873,6 +974,23 @@ void init_log(GameState* state) {
         token = strtok(NULL, "|");
         if (!token) break;
         c->conditions = (uint16_t)atoi(token);
+        
+        /* Death save data (new fields, may not exist in old save files) */
+        token = strtok(NULL, "|");
+        if (token) c->death_save_successes = atoi(token);
+        else c->death_save_successes = 0;
+        
+        token = strtok(NULL, "|");
+        if (token) c->death_save_failures = atoi(token);
+        else c->death_save_failures = 0;
+        
+        token = strtok(NULL, "|");
+        if (token) c->is_stable = atoi(token);
+        else c->is_stable = 0;
+        
+        token = strtok(NULL, "|");
+        if (token) c->is_dead = atoi(token);
+        else c->is_dead = 0;
  
          for(int j=0; j<NUM_CONDITIONS; j++) {
              token = strtok(NULL, "|");
@@ -888,12 +1006,155 @@ void init_log(GameState* state) {
     sort_combatants(state);
     
     log_action(state, "Game Loaded from save file. Round set to %d.", state->round);
-    show_message("Game Loaded.", 0);
+    show_message(state, "Game Loaded.", 0);
 }
  
- /* --- Helper Functions --- */
- 
- void move_selection(GameState* state, int direction) {
+/* --- Death Save Functions --- */
+
+void reset_death_saves(Combatant* c) {
+    c->death_save_successes = 0;
+    c->death_save_failures = 0;
+    c->is_stable = 0;
+}
+
+/**
+ * Roll a death saving throw for a combatant.
+ * 
+ * @param state Game state pointer
+ * @param c Combatant pointer. If NULL, uses the currently selected combatant (state->selected_id).
+ *          This allows convenient manual death saves via 'X' key without requiring selection.
+ * 
+ * Rules implemented:
+ * - Natural 20: Regain 1 HP immediately
+ * - Natural 1: Two failures
+ * - 10-19: Success (counts toward 3 successes = stable)
+ * - 2-9: Failure (counts toward 3 failures = death)
+ * - Only works for players at 0 HP who are not stable or dead
+ */
+void roll_death_save(GameState* state, Combatant* c) {
+    /* If c is NULL, use selected combatant - convenient for manual death saves */
+    if (!c) {
+        int idx = get_index_by_id(state, state->selected_id);
+        if (idx == -1) return;
+        c = &state->combatants[idx];
+    }
+    
+    /* Only players can make death saves */
+    if (c->type != TYPE_PLAYER) return;
+    
+    /* Must be at 0 HP, not stable, not dead */
+    if (c->hp > 0 || c->is_stable || c->is_dead) return;
+    
+    /* Roll d20 */
+    int roll = (rand() % 20) + 1;
+    
+    if (roll == 20) {
+        /* Natural 20: Regain 1 HP */
+        c->hp = 1;
+        c->conditions &= (uint16_t)~COND_UNCONSCIOUS;
+        reset_death_saves(c);
+        show_message(state, "NATURAL 20! Regained 1 HP!", 0);
+        log_action(state, "%s rolled a NATURAL 20 on death save! Regained 1 HP.", c->name);
+    } else if (roll == 1) {
+        /* Natural 1: Two failures */
+        c->death_save_failures += 2;
+        log_action(state, "%s rolled a NATURAL 1 on death save (2 failures). Total: %d failures.", 
+                   c->name, c->death_save_failures);
+        
+        if (c->death_save_failures >= 3) {
+            c->is_dead = 1;
+            show_message(state, "DEATH! (3 failures)", 1);
+            log_action(state, "%s has died (3 death save failures).", c->name);
+        }
+    } else if (roll >= 10) {
+        /* Success (10-19) */
+        c->death_save_successes++;
+        log_action(state, "%s rolled %d on death save (SUCCESS). Total: %d successes.", 
+                   c->name, roll, c->death_save_successes);
+        
+        if (c->death_save_successes >= 3) {
+            c->is_stable = 1;
+            show_message(state, "STABLE! (3 successes)", 0);
+            log_action(state, "%s is now STABLE (3 death save successes).", c->name);
+        }
+    } else {
+        /* Failure (2-9) */
+        c->death_save_failures++;
+        log_action(state, "%s rolled %d on death save (FAILURE). Total: %d failures.", 
+                   c->name, roll, c->death_save_failures);
+        
+        if (c->death_save_failures >= 3) {
+            c->is_dead = 1;
+            show_message(state, "DEATH! (3 failures)", 1);
+            log_action(state, "%s has died (3 death save failures).", c->name);
+        }
+    }
+}
+
+void handle_damage_at_zero_hp(GameState* state, Combatant* c, int damage, int is_critical) {
+    if (c->type != TYPE_PLAYER || c->hp > 0 || c->is_dead) return;
+    
+    /* Taking damage at 0 HP causes death save failures */
+    if (is_critical) {
+        c->death_save_failures += 2;
+        log_action(state, "%s took %d CRITICAL damage at 0 HP (2 failures). Total: %d failures.", 
+                   c->name, damage, c->death_save_failures);
+    } else {
+        c->death_save_failures++;
+        log_action(state, "%s took %d damage at 0 HP (1 failure). Total: %d failures.", 
+                   c->name, damage, c->death_save_failures);
+    }
+    
+    /* If stable, damage makes them unstable */
+    if (c->is_stable) {
+        c->is_stable = 0;
+        log_action(state, "%s is no longer stable due to damage.", c->name);
+    }
+    
+    /* Check for death */
+    if (c->death_save_failures >= 3) {
+        c->is_dead = 1;
+        show_message(state, "DEATH! (3 failures from damage)", 1);
+        log_action(state, "%s has died (3 death save failures).", c->name);
+    }
+}
+
+void stabilize_combatant(GameState* state) {
+    int idx = get_index_by_id(state, state->selected_id);
+    if (idx == -1) return;
+    
+    Combatant* c = &state->combatants[idx];
+    
+    if (c->type != TYPE_PLAYER) {
+        show_message(state, "Only players can be stabilized!", 1);
+        return;
+    }
+    
+    if (c->hp > 0) {
+        show_message(state, "Combatant is not at 0 HP!", 1);
+        return;
+    }
+    
+    if (c->is_dead) {
+        show_message(state, "Combatant is already dead!", 1);
+        return;
+    }
+    
+    if (c->is_stable) {
+        show_message(state, "Combatant is already stable!", 1);
+        return;
+    }
+    
+    /* Stabilize: reset death saves, set stable flag */
+    reset_death_saves(c);
+    c->is_stable = 1;
+    show_message(state, "Combatant stabilized!", 0);
+    log_action(state, "%s has been stabilized (Spare the Dying/Medicine check/Healer's Kit).", c->name);
+}
+
+/* --- Helper Functions --- */
+
+void move_selection(GameState* state, int direction) {
      int idx = get_index_by_id(state, state->selected_id);
      if (idx == -1) {
          if (state->count > 0) state->selected_id = state->combatants[0].id;
@@ -951,16 +1212,16 @@ void sort_combatants(GameState* state) {
      return ret;
  }
  
- int get_input_int(const char* prompt, int* value) {
-     char buf[32];
-     if(get_input_string(prompt, buf, 32)) {
-         if (parse_int_safe(buf, value)) {
-             return 1;
-         }
-         show_message("Invalid Number!", 1);
-     }
-     return 0;
- }
+int get_input_int(const char* prompt, int* value) {
+    char buf[32];
+    if(get_input_string(prompt, buf, 32)) {
+        if (parse_int_safe(buf, value)) {
+            return 1;
+        }
+        /* Invalid number - caller can handle message if needed */
+    }
+    return 0;
+}
  
  int get_input_char(const char* prompt, const char* allowed) {
      attron(COLOR_PAIR(COLOR_HEADER));
@@ -979,11 +1240,68 @@ void sort_combatants(GameState* state) {
      return (tolower(ch) == 'y');
  }
  
-void show_message(const char* msg, int is_error) {
-    int pair = is_error ? COLOR_MSG_ERROR : COLOR_MSG_SUCCESS;
-    attron(COLOR_PAIR(pair) | A_BOLD);
-    mvprintw(LINES/2, COLS/2 - (int)(strlen(msg)/2), " %s ", msg);
-    attroff(COLOR_PAIR(pair) | A_BOLD);
-    refresh();
-    napms(1000); 
+void show_message(GameState* state, const char* msg, int is_error) {
+    if (!state) return;
+    
+    /* Clear old messages first */
+    clear_old_messages(state);
+    
+    /* If queue is full, remove oldest */
+    if (state->message_queue_count >= MAX_MESSAGE_QUEUE) {
+        /* Shift all messages up */
+        for (int i = 0; i < MAX_MESSAGE_QUEUE - 1; i++) {
+            state->message_queue[i] = state->message_queue[i + 1];
+        }
+        state->message_queue_count = MAX_MESSAGE_QUEUE - 1;
+    }
+    
+    /* Add new message */
+    MessageQueueEntry* entry = &state->message_queue[state->message_queue_count];
+    strncpy(entry->text, msg, sizeof(entry->text) - 1);
+    entry->text[sizeof(entry->text) - 1] = '\0';
+    entry->is_error = is_error;
+    entry->timestamp = time(NULL);
+    state->message_queue_count++;
+}
+
+void clear_old_messages(GameState* state) {
+    if (!state) return;
+    
+    time_t now = time(NULL);
+    int write_idx = 0;
+    
+    for (int i = 0; i < state->message_queue_count; i++) {
+        double elapsed = difftime(now, state->message_queue[i].timestamp);
+        /* Keep messages that are less than 1.5 seconds old */
+        if (elapsed < 1.5) {
+            if (write_idx != i) {
+                state->message_queue[write_idx] = state->message_queue[i];
+            }
+            write_idx++;
+        }
+    }
+    
+    state->message_queue_count = write_idx;
+}
+
+void draw_message_queue(GameState* state) {
+    if (!state || state->message_queue_count == 0) return;
+    
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+    
+    /* Draw messages at the bottom of the screen */
+    int y = rows - state->message_queue_count - 1;
+    for (int i = 0; i < state->message_queue_count && y < rows; i++) {
+        MessageQueueEntry* entry = &state->message_queue[i];
+        int pair = entry->is_error ? COLOR_MSG_ERROR : COLOR_MSG_SUCCESS;
+        
+        /* Clear the line first */
+        mvhline(y, 0, ' ', cols);
+        
+        attron(COLOR_PAIR(pair) | A_BOLD);
+        mvprintw(y, cols/2 - (int)(strlen(entry->text)/2), " %s ", entry->text);
+        attroff(COLOR_PAIR(pair) | A_BOLD);
+        y++;
+    }
 }

@@ -9,9 +9,11 @@ A terminal-based initiative tracker for Dungeons & Dragons 5th Edition combat en
 - **Combatant Management**: Add, remove, and manage players and enemies
 - **Initiative Tracking**: Automatic sorting by initiative and dexterity
 - **HP Tracking**: Visual HP indicators with color coding (Good/Hurt/Critical/Unconscious/Dead)
+- **Death Saving Throws**: Full 5e death save implementation with automatic rolling at start of turn
 - **Condition Management**: Apply and track 15 different conditions with optional durations
 - **Turn Management**: Navigate through combat rounds with next/previous turn controls
 - **Combat Logging**: Automatic logging of combat actions with export functionality
+- **Message Queue**: Non-blocking message system for multiple notifications
 - **Undo System**: Undo last action (up to 10 states)
 - **Save/Load**: Persist game state between sessions
 - **Color-Coded UI**: Visual distinction between players and enemies
@@ -82,10 +84,12 @@ gcc initiative.c -lncurses -o initiative
 - **N** - Next turn
 - **P** - Previous turn
 - **R** - Reroll initiative
-- **S** - Save game state
-- **L** - Load game state
+- **X** - Roll death save (manual, for selected combatant)
+- **T** - Stabilize combatant (Spare the Dying/Medicine/Healer's Kit)
 - **E** - Export combat log
 - **Z** - Undo last action
+- **S** - Save game state
+- **L** - Load game state
 - **↑/↓** - Navigate selection
 - **Q** - Quit
 
@@ -95,6 +99,23 @@ gcc initiative.c -lncurses -o initiative
 - **Enemies**: Die at 0 HP
 - **Initiative**: Sorted by initiative roll, then dexterity modifier
 - **Conditions**: Can be applied with optional durations (in rounds)
+
+### Death Saving Throws (5e Rules)
+
+When a player character drops to 0 HP, they begin making death saving throws:
+
+- **Automatic**: Death saves are rolled automatically at the start of each turn when at 0 HP
+- **Roll Results**:
+  - **Natural 20**: Regain 1 HP immediately
+  - **Natural 1**: Two failures
+  - **10-19**: Success (toward 3 successes = stable)
+  - **2-9**: Failure (toward 3 failures = death)
+- **3 Successes**: Become stable (still at 0 HP, unconscious, but no longer making saves)
+- **3 Failures**: Die
+- **Damage at 0 HP**: Regular damage = 1 failure, Critical hit = 2 failures
+- **Instant Death**: If damage reduces you to 0 HP and remaining damage ≥ max HP, instant death (no saves)
+- **Stabilization**: Use **T** key to stabilize (simulates Spare the Dying, Medicine check, or Healer's Kit)
+- **Healing**: Any healing resets death saves and removes unconscious condition
 
 ## File Locations
 
