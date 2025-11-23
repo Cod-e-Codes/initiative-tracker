@@ -96,8 +96,8 @@ gcc initiative.c -lncurses -o initiative
 
 ## File Locations
 
-- **Save file**: `~/.dnd_tracker_save.txt`
-- **Log export**: `~/combat_log_export.txt`
+- **Save file**: `~/.dnd_tracker_save.txt` (or current directory if `HOME` is not set)
+- **Log export**: `~/combat_log_export.txt` (or current directory if `HOME` is not set)
 
 ## License
 
