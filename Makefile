@@ -25,6 +25,10 @@ install: $(TARGET)
 uninstall:
 	rm -f /usr/local/bin/$(TARGET)
 
+# Debug build target
+debug: CFLAGS = -Wall -Wextra -g -O0 -std=c11
+debug: $(TARGET)
+
 # Phony targets
-.PHONY: all clean install uninstall
+.PHONY: all clean install uninstall debug
 
