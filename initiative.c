@@ -200,6 +200,7 @@ void stabilize_combatant(GameState* state);
 void draw_condition_menu(GameState* state);
 int handle_condition_menu_input(GameState* state, int ch);
 void draw_help_menu(GameState* state);
+void duplicate_combatant(GameState* state);
  
  /* New Feature Prototypes */
  void log_action(GameState* state, const char* format, ...);
@@ -302,6 +303,7 @@ int main(void) {
             case 'z': undo_last_action(&state); break;
             case 'x': if (state.count > 0) { save_undo_state(&state); roll_death_save(&state, NULL); } break;
             case 't': if (state.count > 0) { save_undo_state(&state); stabilize_combatant(&state); } break;
+            case 'u': if (state.count > 0) { save_undo_state(&state); duplicate_combatant(&state); } break;
             case KEY_UP:
             case 'k':
                 if (state.count > 0) move_selection(&state, -1);
@@ -497,17 +499,19 @@ void draw_ui(GameState* state) {
     mvhline(0, 0, ' ', cols);
     mvprintw(0, 1, "D&D INITIATIVE TRACKER | Round: %d", state->round);
     mvhline(1, 0, ' ', cols);
-    mvprintw(1, 1, "Keys: A(dd) D(el) H(eal) C(ond) N(ext) P(rev) R(eroll) X(death) T(stabilize) E(xport) Z(undo) S(ave) L(oad) Q(uit)");
+    mvprintw(1, 1, "Keys: A(dd) D(el) H(eal) C(ond) N(ext) P(rev) R(eroll) U(dup) X(death) T(stabilize)");
+    mvhline(2, 0, ' ', cols);
+    mvprintw(2, 1, "      E(xport) Z(undo) S(ave) L(oad) ?(help) Q(uit)");
     attroff(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
 
     int split_y = rows / 2;
-    int list_height = split_y - 4;
+    int list_height = split_y - 5;
  
-    mvhline(2, 0, ACS_HLINE, cols);
+    mvhline(3, 0, ACS_HLINE, cols);
     attron(A_BOLD);
-    mvprintw(2, 2, "[ PLAYERS ]");
+    mvprintw(3, 2, "[ PLAYERS ]");
     attroff(A_BOLD);
-    draw_filtered_list(state, 3, 0, cols, list_height, TYPE_PLAYER);
+    draw_filtered_list(state, 4, 0, cols, list_height, TYPE_PLAYER);
  
      attron(COLOR_PAIR(COLOR_SEPARATOR));
      mvhline(split_y, 0, ACS_HLINE, cols);
@@ -855,6 +859,7 @@ void draw_help_menu(GameState* state) {
     mvprintw(y++, h_start_x + 4, "N : Next turn (auto death saves)");
     mvprintw(y++, h_start_x + 4, "P : Previous turn");
     mvprintw(y++, h_start_x + 4, "R : Reroll initiative");
+    mvprintw(y++, h_start_x + 4, "U : Duplicate selected combatant");
     mvprintw(y++, h_start_x + 4, "X : Manual death save roll");
     mvprintw(y++, h_start_x + 4, "T : Stabilize combatant");
     y++;
@@ -955,6 +960,163 @@ void add_combatant(GameState* state) {
     }
     
     log_action(state, "Added %s: Init %d, HP %d.", c.name, c.initiative, c.max_hp);
+ }
+ 
+ void duplicate_combatant(GameState* state) {
+    if (state->count == 0) return;
+    
+    int idx = get_index_by_id(state, state->selected_id);
+    if (idx == -1) {
+        show_message(state, "No combatant selected!", 1);
+        return;
+    }
+
+    /* Validate space */
+    int max_copies = MAX_COMBATANTS - state->count;
+    if (max_copies <= 0) {
+        show_message(state, "List full! Cannot duplicate.", 1);
+        return;
+    }
+
+    Combatant* source = &state->combatants[idx];
+    
+    int num_copies;
+    /* Prompt user, limiting to available slots */
+    if (!get_input_int(state, "Number of duplicates: ", &num_copies, 1, max_copies)) {
+        return;
+    }
+
+    /* Reserve space for suffix: " 2147483647" worst case = 12 chars */
+    const int max_suffix_len = 12;
+    const int max_base_len = NAME_LENGTH - max_suffix_len;
+
+    /* HANDLE NAMING */
+    char base_name[NAME_LENGTH];
+    /* Check if source already has a number to avoid "Goblin 1 1" */
+    int len = (int)strlen(source->name);
+    int trailing_num_start = len;
+    
+    /* Find where trailing digits start */
+    while (trailing_num_start > 0 && isdigit((unsigned char)source->name[trailing_num_start - 1])) {
+        trailing_num_start--;
+    }
+    
+    /* If we found trailing digits, determine where to cut */
+    if (trailing_num_start < len) {
+        /* There are trailing digits */
+        int base_end = trailing_num_start;
+        /* Check if there's a space before the digits - if so, include it in the strip */
+        if (base_end > 0 && isspace((unsigned char)source->name[base_end - 1])) {
+            base_end--; /* Strip the space too */
+        }
+        strncpy(base_name, source->name, (size_t)base_end);
+        base_name[base_end] = '\0';
+    } else {
+        /* No trailing number, use full name */
+        strncpy(base_name, source->name, NAME_LENGTH);
+        base_name[NAME_LENGTH - 1] = '\0';
+    }
+    
+    /* Trim trailing spaces from base */
+    int base_len = (int)strlen(base_name);
+    while (base_len > 0 && isspace((unsigned char)base_name[base_len - 1])) {
+        base_name[--base_len] = '\0';
+    }
+
+    /* Ensure base_name is short enough to fit suffix (space + number) */
+    if (base_len > max_base_len) {
+        base_name[max_base_len] = '\0';
+        base_len = max_base_len;
+    }
+
+    /* Find the highest existing number for this base_name to avoid duplicates */
+    int highest_num = 0;
+    int base_name_len = (int)strlen(base_name);
+    int original_has_number = 0;
+    
+    /* Scan all combatants to find highest number for this base_name */
+    for (int i = 0; i < state->count; i++) {
+        const char* existing_name = state->combatants[i].name;
+        int existing_len = (int)strlen(existing_name);
+        
+        /* Check if name starts with base_name (case-sensitive match) */
+        if (existing_len > base_name_len && 
+            strncmp(existing_name, base_name, (size_t)base_name_len) == 0) {
+            
+            /* Check if there's a space after base_name */
+            if (existing_name[base_name_len] == ' ') {
+                /* Try to parse the number after the space */
+                const char* num_start = existing_name + base_name_len + 1;
+                char* endptr;
+                long parsed_num = strtol(num_start, &endptr, 10);
+                
+                /* If we parsed a valid number and consumed all remaining chars */
+                if (endptr != num_start && *endptr == '\0' && parsed_num > 0 && parsed_num <= INT_MAX) {
+                    int num = (int)parsed_num;
+                    if (num > highest_num) {
+                        highest_num = num;
+                    }
+                    /* Also check if this is the original combatant */
+                    if (i == idx) {
+                        original_has_number = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Determine starting number for duplicates */
+    int start_num;
+    if (!original_has_number) {
+        /* Original has no number - rename it to "base_name 1", duplicates start at 2 */
+        snprintf(source->name, NAME_LENGTH, "%.*s 1", max_base_len, base_name);
+        start_num = (highest_num > 0) ? highest_num + 1 : 2; /* Start duplicates after highest, or at 2 if none */
+    } else {
+        /* Original keeps its number, duplicates start after highest existing */
+        start_num = highest_num + 1;
+    }
+    
+    /* CREATE DUPLICATES */
+    for (int i = 0; i < num_copies; i++) {
+        if (state->count >= MAX_COMBATANTS) break; /* Safety check */
+        
+        Combatant c = *source; /* Inherit everything first */
+        
+        if (state->next_id == INT_MAX) {
+            state->next_id = 1;
+        }
+        c.id = state->next_id++;
+        
+        /* Number them starting from start_num */
+        /* base_name is already truncated to max_base_len, ensuring room for suffix */
+        snprintf(c.name, NAME_LENGTH, "%.*s %d", max_base_len, base_name, start_num + i);
+        
+        /* Reroll Initiative: 1d20 + Dex Modifier */
+        c.initiative = (rand() % 20) + 1 + c.dex;
+        
+        /* Fresh Spawn State - Reset to full health and clear conditions */
+        c.hp = c.max_hp;          /* Reset to full health */
+        c.conditions = 0;         /* Clear conditions */
+        memset(c.condition_duration, 0, sizeof(c.condition_duration));
+        
+        /* Always reset death saves for new entities */
+        c.death_save_successes = 0;
+        c.death_save_failures = 0;
+        c.is_stable = 0;
+        c.is_dead = 0;
+        
+        state->combatants[state->count++] = c;
+    }
+    
+    sort_combatants(state);
+    
+    /* Update selection to the last added unit so the user sees the change */
+    if (state->count > 0) {
+        state->selected_id = state->combatants[state->count - 1].id;
+    }
+    
+    log_action(state, "Created %d duplicates of %s.", num_copies, base_name);
+    show_message(state, "Duplicates created.", 0);
  }
  
  void remove_combatant(GameState* state) {
@@ -1650,15 +1812,18 @@ int get_input_string(const char* prompt, char* buffer, int max_len) {
     int prompt_len = (int)strlen(prompt);
     move(input_y, prompt_len);
     
-    echo();
     curs_set(1);
     refresh();
     
     int ret = 0;
+    /* Check first character without echo to avoid double-echoing */
+    noecho();
     int ch = getch();
-    /* If first char isn't ESC/Enter, put it back for getnstr to consume */
+    
+    /* If first char isn't ESC/Enter, put it back and read full string with echo */
     if (ch != 27 && ch != '\n' && ch != '\r') {
         ungetch(ch);
+        echo(); /* Enable echo for getnstr */
         if (getnstr(buffer, max_len - 1) != ERR && buffer[0] != '\0') {
             ret = 1;
         }

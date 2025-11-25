@@ -6,7 +6,7 @@ A terminal-based initiative tracker for Dungeons & Dragons 5th Edition combat en
 
 ## Features
 
-- **Combatant Management**: Add, remove, and manage players and enemies
+- **Combatant Management**: Add, remove, duplicate, and manage players and enemies
 - **Initiative Tracking**: Automatic sorting by initiative and dexterity
 - **HP Tracking**: Visual HP indicators with color coding (Good/Hurt/Critical/Unconscious/Dead)
 - **Death Saving Throws**: Full 5e death save implementation with automatic rolling at start of turn
@@ -86,6 +86,7 @@ gcc initiative.c -lncurses -o initiative
 - **N** - Next turn
 - **P** - Previous turn
 - **R** - Reroll initiative
+- **U** - Duplicate selected combatant (with auto-numbering and initiative rolling)
 - **X** - Roll death save (manual, for selected combatant)
 - **T** - Stabilize combatant (Spare the Dying/Medicine/Healer's Kit)
 - **E** - Export combat log
