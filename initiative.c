@@ -826,7 +826,7 @@ void draw_help_menu(GameState* state) {
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
 
-    int h_height = 26;
+    int h_height = 28;
     int h_width = 75;
     int h_start_y = (rows - h_height) / 2;
     int h_start_x = (cols - h_width) / 2;
