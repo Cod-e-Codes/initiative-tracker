@@ -334,7 +334,7 @@ void init_colors(void) {
     init_pair(COLOR_HEADER, COLOR_BLACK, COLOR_WHITE);
     init_pair(COLOR_SEPARATOR, COLOR_BLUE, COLOR_BLACK);
     init_pair(COLOR_MENU_SEL, COLOR_BLACK, COLOR_YELLOW);
-    init_pair(COLOR_MENU_NORM, COLOR_WHITE, COLOR_BLACK);
+    init_pair(COLOR_MENU_NORM, COLOR_BLACK, COLOR_WHITE);
     init_pair(COLOR_MSG_SUCCESS, COLOR_BLACK, COLOR_GREEN);
     init_pair(COLOR_MSG_ERROR, COLOR_WHITE, COLOR_RED);
 }
@@ -712,22 +712,26 @@ void draw_condition_menu(GameState* state) {
     if (start_x < 0) start_x = 0;
 
     /* Draw overlay background */
+    attron(COLOR_PAIR(COLOR_HEADER));
     for (int y = start_y; y < start_y + menu_height && y < rows; y++) {
         for (int x = start_x; x < start_x + menu_width && x < cols; x++) {
-            mvaddch(y, x, ' ' | A_REVERSE);
+            mvaddch(y, x, ' ');
         }
     }
+    attroff(COLOR_PAIR(COLOR_HEADER));
 
     attron(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
     mvprintw(start_y, start_x + 2, "Conditions for: %s", c->name);
     attroff(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
 
+    attron(COLOR_PAIR(COLOR_HEADER));
     mvhline(start_y + 1, start_x, ACS_HLINE, menu_width);
 
-    attron(COLOR_PAIR(COLOR_DEFAULT) | A_DIM);
+    attron(COLOR_PAIR(COLOR_HEADER) | A_DIM);
     mvprintw(start_y + 2, start_x + 2, "UP/DOWN: Navigate | ENTER: Toggle | 'd': Duration");
-    attroff(COLOR_PAIR(COLOR_DEFAULT) | A_DIM);
+    attroff(COLOR_PAIR(COLOR_HEADER) | A_DIM);
 
+    attron(COLOR_PAIR(COLOR_HEADER));
     mvhline(start_y + 3, start_x, ACS_HLINE, menu_width);
 
     for (int i = 0; i < NUM_CONDITIONS; i++) {
@@ -749,10 +753,10 @@ void draw_condition_menu(GameState* state) {
         attroff(COLOR_PAIR(pair));
     }
 
+    attron(COLOR_PAIR(COLOR_HEADER));
     mvhline(start_y + menu_height - 2, start_x, ACS_HLINE, menu_width);
-    attron(COLOR_PAIR(COLOR_SEPARATOR));
     mvprintw(start_y + menu_height - 1, start_x + (menu_width - 20) / 2, "ESC or 'q' to close");
-    attroff(COLOR_PAIR(COLOR_SEPARATOR));
+    attroff(COLOR_PAIR(COLOR_HEADER));
 }
 
 /**
@@ -833,19 +837,22 @@ void draw_help_menu(GameState* state) {
     if (h_start_y < 0) h_start_y = 0;
     if (h_start_x < 0) h_start_x = 0;
 
+    attron(COLOR_PAIR(COLOR_HEADER));
     for (int y = h_start_y; y < h_start_y + h_height && y < rows; y++) {
         for (int x = h_start_x; x < h_start_x + h_width && x < cols; x++) {
-            mvaddch(y, x, ' ' | A_REVERSE);
+            mvaddch(y, x, ' ');
         }
     }
+    attroff(COLOR_PAIR(COLOR_HEADER));
 
     attron(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
     mvprintw(h_start_y, h_start_x + (h_width - 12) / 2, "HELP & COMMANDS");
     attroff(COLOR_PAIR(COLOR_HEADER) | A_BOLD);
 
+    attron(COLOR_PAIR(COLOR_HEADER));
     mvhline(h_start_y + 1, h_start_x, ACS_HLINE, h_width);
 
-    attron(COLOR_PAIR(COLOR_DEFAULT));
+    attron(COLOR_PAIR(COLOR_HEADER));
     int y = h_start_y + 3;
     mvprintw(y++, h_start_x + 2, "Navigation:");
     mvprintw(y++, h_start_x + 4, "UP/DOWN or k/j : Move selection");
@@ -869,12 +876,12 @@ void draw_help_menu(GameState* state) {
     mvprintw(y++, h_start_x + 4, "S : Save game");
     mvprintw(y++, h_start_x + 4, "L : Load game");
     mvprintw(y++, h_start_x + 4, "Q : Quit");
-    attroff(COLOR_PAIR(COLOR_DEFAULT));
+    attroff(COLOR_PAIR(COLOR_HEADER));
 
+    attron(COLOR_PAIR(COLOR_HEADER));
     mvhline(h_start_y + h_height - 2, h_start_x, ACS_HLINE, h_width);
-    attron(COLOR_PAIR(COLOR_SEPARATOR));
     mvprintw(h_start_y + h_height - 1, h_start_x + (h_width - 20) / 2, "Press any key to close");
-    attroff(COLOR_PAIR(COLOR_SEPARATOR));
+    attroff(COLOR_PAIR(COLOR_HEADER));
 
     /* Safety check: clear overflow if content exceeds menu height */
     if (y > h_start_y + h_height - 2) {
